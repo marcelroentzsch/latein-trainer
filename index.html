@@ -94,6 +94,12 @@ form.type input{flex:1;font:inherit;padding:12px 14px;border-radius:14px;border:
   <select id="voiceSel" style="width:100%;font:inherit;padding:12px;border-radius:14px;border:2px solid var(--line);background:#fff"></select>
   <label class="h" style="margin-top:10px">Sprechtempo</label>
   <select id="tempoSel" style="width:100%;font:inherit;padding:12px;border-radius:14px;border:2px solid var(--line);background:#fff"><option value="0.95">Langsam</option><option value="1.16">Normal</option><option value="1.4">Schnell</option></select>
+  <details style="margin-top:14px;background:#fff;border-radius:14px;padding:10px 14px;box-shadow:0 2px 0 var(--line)"><summary style="font-weight:700;cursor:pointer">KI-Spracherkennung (Gemini)</summary>
+    <label style="display:flex;gap:8px;align-items:center;margin:12px 0"><input type="checkbox" id="llmOn" style="width:22px;height:22px"> KI-Erkennung verwenden</label>
+    <label class="h">API-Schlüssel</label><input id="llmKey" type="password" autocomplete="off" placeholder="AIza…" style="width:100%;font:inherit;padding:12px;border-radius:14px;border:2px solid var(--line)">
+    <label class="h" style="margin-top:8px">Modell</label><input id="llmModel" autocomplete="off" style="width:100%;font:inherit;padding:12px;border-radius:14px;border:2px solid var(--line)">
+    <button class="btn ghost sm" id="llmTest" style="margin-top:10px">Verbindung testen</button><p id="llmMsg" style="font-weight:700;margin:8px 0 0"></p>
+    <p class="foot" style="text-align:left;margin-top:8px">Der Schlüssel bleibt nur auf diesem Gerät gespeichert. Kostenlos erhältlich auf aistudio.google.com/apikey.</p></details>
   <p class="foot" id="footInfo"></p>
 </section>
 
@@ -153,6 +159,7 @@ form.type input{flex:1;font:inherit;padding:12px 14px;border-radius:14px;border:
 <div class="pause" id="pause"><div><p style="font-size:20px;font-weight:700;margin:0 0 14px">Pause</p><button class="btn" id="resume">Weiter</button></div></div>
 
 <script src="vocab.js"></script>
+<script src="llm.js"></script>
 <script src="logic.js"></script>
 <script src="icons.js"></script>
 <script src="app.js"></script>

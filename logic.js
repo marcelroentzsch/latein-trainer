@@ -152,12 +152,16 @@
 
   /* ---------- Aussprache (deutsche Schulaussprache über deutsche Stimme) ---------- */
   const PRON_OVR = { deus: 'de-us', europa: 'e-uropa', aeolus: 'ä-olus', mortuus: 'mortu-us', deesse: 'de-esse', desum: 'de-sum', ei: 'ei', ibi: 'ibi', sui: 'sui' };
+  // Lange Vokale (Makron) werden mit deutscher Rechtschreibung lang geschrieben: ē -> ee, ā -> aa, ō -> oo, ī -> ie, ū -> uh
+  const LONGV = { 'ā': 'aa', 'ē': 'ee', 'ī': 'ie', 'ō': 'oo', 'ū': 'uh', 'ȳ': 'üh' };
   function pronWord(w) {
-    let s = stripMacron(w.toLowerCase());
-    if (PRON_OVR[s]) return PRON_OVR[s];
-    s = s.replace(/^i(?=[aeiou])/, 'j').replace(/qu/g, 'kw').replace(/ae/g, 'ä').replace(/oe/g, 'ö').replace(/eu/g, 'e-u')
+    let s = w.toLowerCase();
+    const plain = stripMacron(s);
+    if (PRON_OVR[plain]) return PRON_OVR[plain];
+    s = s.replace(/^i(?=[aeiouāēīōū])/, 'j').replace(/qu/g, 'kw').replace(/ae/g, 'ä').replace(/oe/g, 'ö').replace(/eu/g, 'e-u')
       .replace(/c/g, 'k').replace(/v/g, 'w').replace(/y/g, 'ü');
-    return s;
+    s = s.replace(/[āēīōūȳ]/g, m => LONGV[m]);
+    return stripMacron(s);
   }
   function pron(la) { return latForms(la).map(f => f.split(/\s+/).map(pronWord).join(' ')).join(', '); }
 

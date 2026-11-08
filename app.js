@@ -44,7 +44,22 @@
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const STT = {
     ok: !!SR, rec: null, denied: false,
-    listen(ms = 9000) {
+    async listenLLM(ms, ctx) {
+      const rec = await LLM.listen(ms, { strict: !!ctx.strict });
+      if (!rec) return null;
+      if (rec.error) { if (rec.error === 'mic') { this.denied = true; notice('Das Mikrofon ist nicht erlaubt. Du kannst unten eintippen. (Im Browser beim Schloss-Symbol das Mikrofon erlauben.)'); } return null; }
+      if (!rec.blob) return null;
+      if (rec.blob.size < 1500) return null;
+      try { ui.status('thinking'); const o = await LLM.interpret(ctx, rec); notice(''); return o.silent ? null : { alts: [o.transcript || ''], llm: o }; }
+      catch (e) {
+        LLM.lastError = e.message || String(e);
+        if (e.status === 400 || e.status === 401 || e.status === 403 || e.status === 404) { LLM.failed = true; notice('Die KI-Erkennung funktioniert nicht (' + LLM.lastError.slice(0, 120) + '). Ich nutze jetzt die normale Spracherkennung.'); }
+        else notice('Die KI ist gerade nicht erreichbar. Bitte noch einmal sagen.');
+        return null;
+      }
+    },
+    listen(ms = 9000, ctx) {
+      if (ctx && LLM.active()) return this.listenLLM(ms, ctx);
       return new Promise(res => {
         if (!SR || this.denied) { return; }          // ohne Mikrofon: nur Eingabe per Tipp/Tasten
         let done = false; const r = new SR(); r.lang = 'de-DE'; r.interimResults = false; r.maxAlternatives = 5; r.continuous = false;
@@ -56,18 +71,18 @@
         try { r.start(); this.rec = r; } catch (e) { fin(null); }
       });
     },
-    abort() { try { this.rec && this.rec.abort(); } catch (e) { } }
+    abort() { try { this.rec && this.rec.abort(); } catch (e) { } try { LLM.cancelListen(); } catch (e) { } }
   };
   function notice(t) { const n = $('#sNotice'); n.textContent = t; n.style.display = t ? 'block' : 'none'; }
 
   /* ---------- Eingabe-Bus: Mikrofon, Tippen und Knöpfe laufen zusammen ---------- */
   const Bus = {
     pending: null, early: null, gate: false,
-    wait(ms) {
+    wait(ms, ctx) {
       return new Promise(res => {
         if (this.early) { const e = this.early; this.early = null; res(e); return; }
         this.pending = res;
-        STT.listen(ms).then(alts => { if (this.pending === res) { this.pending = null; res(alts ? { alts, src: 'voice' } : null); } });
+        STT.listen(ms, ctx).then(o => { if (this.pending === res) { this.pending = null; res(o ? (Array.isArray(o) ? { alts: o, src: 'voice' } : { alts: o.alts, src: 'voice', llm: o.llm }) : null); } });
         if (!SR || STT.denied) { /* wartet auf Tippen/Knöpfe */ }
       });
     },
@@ -158,28 +173,28 @@
   const WRONG = ['Nicht ganz. Versuch es noch einmal.', 'Fast! Probier es noch mal.', 'Das war leider nicht richtig. Noch ein Versuch.'];
 
   const ui = {
-    status(s) { const m = $('#mic'); m.className = 'mic ' + (s === 'listening' ? 'listening' : s === 'speaking' ? 'speaking' : ''); m.textContent = s === 'speaking' ? '🔊' : '🎤'; $('#sState').textContent = { listening: 'Ich höre zu …', speaking: 'Ich spreche …', idle: ' ', paused: 'Pause' }[s] || ' '; },
+    status(s) { const m = $('#mic'); m.className = 'mic ' + (s === 'listening' ? 'listening' : s === 'speaking' ? 'speaking' : ''); m.textContent = s === 'speaking' ? '🔊' : '🎤'; $('#sState').textContent = { listening: 'Ich höre zu …', speaking: 'Ich spreche …', idle: ' ', paused: 'Pause', thinking: 'Ich überlege …' }[s] || ' '; },
     prompt(t) { $('#sPrompt').textContent = t || ''; }, hint(t) { $('#sHint').textContent = t || ''; }, cap(t) { $('#sCap').textContent = t || ''; }, heard(t) { $('#sHeard').textContent = t ? '„' + t + '“' : ''; },
     pic(item) { $('#sPic').innerHTML = item ? Ic.svg(item.icon) : ''; },
     buttons(on) { ['#bHint', '#bRepeat', '#bGive'].forEach(s => $(s).disabled = !on); }
   };
   async function say(id, text, rate) { if (!alive(id)) return; ui.cap(text); ui.status('speaking'); await TTS.speak(text, rate); if (alive(id)) ui.status('idle'); }
-  async function listenFor(id, ms = 9000) {
+  async function listenFor(id, ms = 9000, ctx) {
     if (!alive(id)) return null;
     await sleep(250); if (!alive(id)) return null;
-    ui.status('listening'); const r = await Bus.wait(ms); ui.status('idle');
+    ui.status('listening'); const r = await Bus.wait(ms, ctx); ui.status('idle');
     if (r && r.alts && r.alts[0]) ui.heard(r.alts[0]); else ui.heard('');
     return alive(id) ? r : null;
   }
   // Spricht und hört gleichzeitig zu: man darf schon während der Frage antworten.
   // Das eigene Echo (Wörter, die sie gerade selbst sagt) wird ignoriert.
-  async function sayListen(id, text, ms = 9000) {
+  async function sayListen(id, text, ms = 9000, ctx) {
     if (!alive(id)) return null;
     ui.cap(text); ui.status('speaking'); let speaking = true, tEnd = 0, extra = 0;
     TTS.speak(text).then(() => { speaking = false; tEnd = Date.now(); if (alive(id)) ui.status('listening'); });
     const spoken = new Set(L.deNorm(text).split(/\s+/).filter(Boolean));
     while (alive(id)) {
-      const r = await Bus.wait(speaking ? 15000 : ms);
+      const r = await Bus.wait(speaking ? 15000 : ms, ctx ? Object.assign({}, ctx, { strict: speaking, said: text }) : undefined);
       if (!alive(id)) return null;
       if (!r) { if (speaking) { await sleep(300); continue; } if (extra++ < 1 && Date.now() - tEnd < 4000) continue; ui.status('idle'); return null; }
       const echo = speaking && r.src === 'voice' && r.alts.every(a => L.deNorm(a).split(/\s+/).filter(Boolean).every(w => spoken.has(w)));
@@ -199,19 +214,20 @@
     try {
       const setup = await setupDialog(id); if (!alive(id) || !setup) return;
       await quiz(id, setup.items, setup.order);
-    } finally { if (Sp.run === id) { Bus.gate = false; try { Sp.wake && Sp.wake.release(); } catch (e) { } } }
+    } finally { LLM.closeMic(); if (Sp.run === id) { Bus.gate = false; try { Sp.wake && Sp.wake.release(); } catch (e) { } } }
   }
-  function stopVoice() { Sp.active = false; Sp.run++; Bus.gate = false; Bus.pending = null; Bus.early = null; TTS.cancel(); STT.abort(); try { Sp.wake && Sp.wake.release(); } catch (e) { } }
+  function stopVoice() { LLM.closeMic(); Sp.active = false; Sp.run++; Bus.gate = false; Bus.pending = null; Bus.early = null; TTS.cancel(); STT.abort(); try { Sp.wake && Sp.wake.release(); } catch (e) { } }
 
   async function setupDialog(id) {
     Bus.gate = true; Bus.early = null;
-    let lessons = null, misses = 0, r = await sayListen(id, 'Hallo! Welche Lektionen möchtest du lernen?');
+    const LC = { kind: 'lessons', max: LESSONS.length };
+    let lessons = null, misses = 0, r = await sayListen(id, 'Hallo! Welche Lektionen möchtest du lernen?', 9000, LC);
     while (alive(id) && !lessons) {
       if (!alive(id)) return null;
-      if (!r) { misses++; r = await sayListen(id, misses < 2 ? 'Welche Lektionen möchtest du lernen?' : 'Welche Lektionen? Du kannst die Zahlen auch unten eintippen.'); continue; }
-      if (L.parseCommand(r.alts.join(' ')) === 'stop') return null;
-      lessons = firstParse(r.alts, t => L.parseLessons(t));
-      if (!lessons) r = await sayListen(id, 'Das habe ich nicht verstanden. Welche Lektionen möchtest du lernen?');
+      if (!r) { misses++; r = await sayListen(id, misses < 2 ? 'Welche Lektionen möchtest du lernen?' : 'Welche Lektionen? Du kannst die Zahlen auch unten eintippen.', 9000, LC); continue; }
+      if ((r.llm && r.llm.stop) || L.parseCommand(r.alts.join(' ')) === 'stop') return null;
+      lessons = (r.llm && r.llm.lessons) || firstParse(r.alts, t => L.parseLessons(t));
+      if (!lessons) r = await sayListen(id, 'Das habe ich nicht verstanden. Welche Lektionen möchtest du lernen?', 9000, LC);
     }
     if (!alive(id) || !lessons) return null;
     const desc = L.describeLessons(lessons);
@@ -221,11 +237,11 @@
       await say(id, `${desc}. Nacheinander oder gemischt?`);
       order = null; misses = 0;
       while (alive(id) && !order) {
-        const o = await listenFor(id);
+        const o = await listenFor(id, 9000, { kind: 'order' });
         if (!alive(id)) return null;
         if (!o) { misses++; await say(id, misses < 2 ? 'Nacheinander oder gemischt?' : 'Nacheinander oder gemischt? Du kannst auch unten eintippen.'); continue; }
-        if (L.parseCommand(o.alts.join(' ')) === 'stop') return null;
-        order = firstParse(o.alts, t => L.parseOrder(t));
+        if ((o.llm && o.llm.stop) || L.parseCommand(o.alts.join(' ')) === 'stop') return null;
+        order = (o.llm && o.llm.order) || firstParse(o.alts, t => L.parseOrder(t));
         if (!order) await say(id, 'Das habe ich nicht verstanden. Nacheinander oder gemischt?');
       }
     } else await say(id, `${desc}.`);
@@ -237,7 +253,7 @@
   }
 
   async function quiz(id, items, order) {
-    Sp.lastItems = items; Sp.items = items; Sp.order = order; Bus.gate = true;
+    Sp.lastItems = items; Sp.items = items; Sp.order = order; LLM.poolText = [...new Set(items.map(i => L.latForms(i.la)[0]))].slice(0, 160).join(', '); Bus.gate = true;
     const queue = L.buildQueue(items, order), total = items.length; let done = 0, first = 0; const missed = new Set(); const tried = new Set(); let lastLesson = null, userStop = false;
     ui.buttons(true);
     while (queue.length && alive(id)) {
@@ -273,13 +289,15 @@
     let attempts = 0, hints = 0, silent = 0;
     for (; ;) {
       if (!alive(id)) return 'stop';
-      const r = await listenFor(id, 9000);
+      const r = await listenFor(id, 9000, { kind: 'answer', dir, prompt: dir === 'l2d' ? item.la : L.shortDe(item, 2), accepted: dir === 'l2d' ? L.deVariantsRaw(item.de).slice(0, 8) : L.latAccepted(item, V).slice(0, 6) });
       if (!alive(id)) return 'stop';
       if (!r) { silent++; if (silent === 2) await say(id, 'Ich habe nichts gehört. Sag die Übersetzung, oder sag Tipp.'); if (silent >= 5) { await pauseWait(id); silent = 0; } continue; }
       silent = 0;
-      const alts = r.alts, cmds = alts.map(L.parseCommand).filter(Boolean);
+      const alts = r.alts, llm = r.llm;
+      const cmds = llm ? (['hint', 'repeat', 'giveup', 'stop'].includes(llm.intent) ? [llm.intent] : []) : alts.map(L.parseCommand).filter(Boolean);
       if (cmds.includes('stop')) return 'stop';
-      const correct = dir === 'l2d' ? L.matchGerman(alts, item) : L.matchLatin(alts, item, V, Sp.items);
+      const strict = dir === 'l2d' ? L.matchGerman(alts, item) : L.matchLatin(alts, item, V);
+      const correct = llm ? (llm.intent === 'answer' && (llm.correct || strict)) : (dir === 'l2d' ? strict : L.matchLatin(alts, item, V, Sp.items));
       if (cmds.includes('giveup') && !correct) { await reveal(id, item); return 'wrong'; }
       if (correct) {
         Bus.gate = false; ui.pic(item); ui.hint('');
@@ -335,6 +353,16 @@
   /* ---------- Start ---------- */
   $('#goVoice').onclick = () => { TTS.speak(''); startVoice(); };
   $('#goVisual').onclick = () => { buildChips(); show('vsetup'); };
+  /* KI-Einstellungen */
+  (function () {
+    const on = $('#llmOn'), key = $('#llmKey'), model = $('#llmModel'), msg = $('#llmMsg');
+    on.checked = LLM.on; key.value = LLM.key; model.value = LLM.model;
+    const say = (t, bad) => { msg.textContent = t; msg.style.color = bad ? 'var(--bad)' : 'var(--ok)'; };
+    on.onchange = () => { LLM.setOn(on.checked); if (on.checked && !LLM.key) say('Bitte zuerst den Schlüssel eintragen.', true); else say(on.checked ? 'KI-Erkennung ist an.' : 'Normale Spracherkennung ist an.'); };
+    key.onchange = () => { LLM.setKey(key.value); LLM.failed = false; };
+    model.onchange = () => { LLM.setModel(model.value); model.value = LLM.model; LLM.failed = false; };
+    $('#llmTest').onclick = async () => { LLM.setKey(key.value); LLM.setModel(model.value); LLM.failed = false; if (!LLM.key) { say('Bitte zuerst den Schlüssel eintragen.', true); return; } say('Teste …'); try { await LLM.test(); say('Funktioniert! Die KI ist erreichbar.'); } catch (e) { say('Fehler: ' + (e.message || e), true); } };
+  })();
   function fillVoices(de) { const sel = $('#voiceSel'); if (!sel) return; sel.innerHTML = ''; de.forEach(v => { const o = document.createElement('option'); o.value = v.name; o.textContent = v.name.replace(/^Microsoft |^Google /, m => m) + (/natural|neural|online/i.test(v.name) ? ' ★' : ''); if (TTS.voice && TTS.voice.name === v.name) o.selected = true; sel.appendChild(o); }); }
   $('#voiceSel').addEventListener('change', e => { store.set('voiceName', e.target.value); TTS.voice = TTS.list().find(v => v.name === e.target.value) || TTS.voice; TTS.speak('Ich spreche so: wikus, amare, puella.', 1); });
   $('#tempoSel').value = String(TTS.factor); if ($('#tempoSel').value !== String(TTS.factor)) $('#tempoSel').value = '1.16';
@@ -343,5 +371,5 @@
   if (!SR) $('#noSR').style.display = 'block';
   TTS.load(); buildChips();
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => { });
-  window.__latein = { Bus, STT, TTS, Sp, startVoice, startVisual, memo, L, V };
+  window.__latein = { LLM, Bus, STT, TTS, Sp, startVoice, startVisual, memo, L, V };
 })();

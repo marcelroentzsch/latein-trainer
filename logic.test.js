@@ -61,9 +61,9 @@ ok('wir->via (Pool)', L.matchLatin(['wir'], w('via'), V, pool13)); ok('wir->via 
 ok('wir !-> puella', !L.matchLatin(['wir'], w('puella'), V, pool13));
 ok('Pool: falsches Wort', !L.matchLatin(['villa'], w('puella'), V, pool13)); ok('Pool: kurz', !L.matchLatin(['ad'], w('et'), V, pool13));
 // Aussprache
-eq('pron1', L.pron('cūr?'), 'kur'); eq('pron2', L.pron('vīcus'), 'wikus'); eq('pron3', L.pron('quid?'), 'kwid');
-eq('pron4', L.pron('amāre, amō'), 'amare, amo'); eq('pron5', L.pron('iam'), 'jam'); eq('pron6', L.pron('aedificium'), 'ädifikium'); eq('pron7', L.pron('deus'), 'de-us');
-eq('pron8', L.pron('novus, a, um'), 'nowus'); eq('pron9', L.pron('ē / ex (+ Abl.)'), 'e, ex');
+eq('pron1', L.pron('cūr?'), 'kuhr'); eq('pron2', L.pron('vīcus'), 'wiekus'); eq('pron3', L.pron('quid?'), 'kwid');
+eq('pron4', L.pron('amāre, amō'), 'amaare, amoo'); eq('pron5', L.pron('iam'), 'jam'); eq('pron6', L.pron('aedificium'), 'ädifikium'); eq('pron7', L.pron('deus'), 'de-us');
+eq('pron8', L.pron('novus, a, um'), 'nowus'); eq('pron9', L.pron('ē / ex (+ Abl.)'), 'ee, ex'); eq('pron10', L.pron('dolēre'), 'doleere');
 // Tipps
 const h1 = L.hint(w('puella'), 'l2d', 1), h2 = L.hint(w('puella'), 'l2d', 2);
 eq('hint1', [h1.letter, h1.said], ['M', 'Der erste Buchstabe ist M.']); eq('hint2', [h2.letter, h2.shown], ['Ä', 'M ä _ _ _ _ _']);

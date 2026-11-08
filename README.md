@@ -18,3 +18,8 @@ Vokabeltrainer für Latein, Lektion 1–20 (Lernwörter).
 ```
 node tests/logic.test.js
 ```
+
+## KI-Spracherkennung (optional)
+
+Auf dem Startbildschirm unter „KI-Spracherkennung (Gemini)" einen API-Schlüssel eintragen (kostenlos auf aistudio.google.com/apikey) und „KI-Erkennung verwenden" einschalten.
+Der Schlüssel wird nur im Browser des jeweiligen Geräts gespeichert, nie im Code. Ohne Schlüssel läuft die normale Browser-Spracherkennung.
