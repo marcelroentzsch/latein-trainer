@@ -153,6 +153,9 @@
 
   /* ---------- Zahlen / Lektionen ---------- */
   const NUMW = { ein: 1, eins: 1, eine: 1, einen: 1, erste: 1, erster: 1, zwei: 2, zwo: 2, zweite: 2, drei: 3, dritte: 3, vier: 4, vierte: 4, fuenf: 5, fünf: 5, sechs: 6, sieben: 7, acht: 8, neun: 9, zehn: 10, elf: 11, zwoelf: 12, zwölf: 12, dreizehn: 13, vierzehn: 14, fuenfzehn: 15, fünfzehn: 15, sechzehn: 16, siebzehn: 17, achtzehn: 18, neunzehn: 19, zwanzig: 20 };
+  (function () { const ords = { erst: 1, zweit: 2, dritt: 3, viert: 4, fuenft: 5, fünft: 5, sechst: 6, siebt: 7, acht: 8, neunt: 9, zehnt: 10, elft: 11, zwoelft: 12, zwölft: 12, dreizehnt: 13, vierzehnt: 14, fuenfzehnt: 15, fünfzehnt: 15, sechzehnt: 16, siebzehnt: 17, achtzehnt: 18, neunzehnt: 19, zwanzigst: 20 };
+    for (const k in ords) for (const suf of ['e', 'en', 'er', 'es', 'em']) { if (NUMW[k + suf] === undefined && !(k === 'acht' && suf === 'e')) NUMW[k + suf] = ords[k]; } })();
+  delete NUMW.ersten;
   const range = (a, b) => { const r = []; for (let i = Math.min(a, b); i <= Math.max(a, b); i++) r.push(i); return r; };
   function parseLessons(text, max = 20) {
     let t = String(text).toLowerCase().replace(/ß/g, 'ss').replace(/einschliesslich|inklusive|einschließlich/g, ' ')
@@ -163,13 +166,20 @@
       if (/^\d+$/.test(k)) seq.push({ n: parseInt(k, 10) });
       else if (NUMW[k] !== undefined) seq.push({ n: NUMW[k] });
       else if (k === 'bis') seq.push({ op: 'bis' });
-      else if (k === 'ab') seq.push({ op: 'ab' });
+      else if (k === 'ab' || k === 'aufwaerts' || k === 'aufwärts') seq.push({ op: 'ab' });
+      else if (k === 'von') seq.push({ op: 'von' });
+      else if (k === 'an' && seq.length >= 2 && seq[seq.length - 1].n !== undefined && seq[seq.length - 2].op === 'von') seq.push({ op: 'anx' });
+      else if (k === 'ersten' || k === 'erstens') seq.push({ op: 'first' });
+      else if (/^letzte[nrs]?$/.test(k)) seq.push({ op: 'last' });
       else if (/^(alle|alles|komplett|saemtliche|sämtliche|ganze|gesamte)/.test(k)) seq.push({ all: true });
     }
     const out = new Set(); let all = false;
     for (let i = 0; i < seq.length; i++) {
       const s = seq[i];
       if (s.all) { all = true; continue; }
+      if (s.op === 'anx') { const p = seq[i - 1].n; out.delete(p); range(p, max).forEach(x => out.add(x)); continue; }
+      if (s.op === 'first' && seq[i + 1] && seq[i + 1].n !== undefined) { range(1, seq[i + 1].n).forEach(x => out.add(x)); i += 1; continue; }
+      if (s.op === 'last') { if (seq[i + 1] && seq[i + 1].n !== undefined && seq[i + 1].n > 1) { range(max - seq[i + 1].n + 1, max).forEach(x => out.add(x)); i += 1; } else out.add(max); continue; }
       if (s.n !== undefined) {
         if (seq[i + 1] && seq[i + 1].op === 'bis' && seq[i + 2] && seq[i + 2].n !== undefined) { range(s.n, seq[i + 2].n).forEach(x => out.add(x)); i += 2; }
         else out.add(s.n);
@@ -191,13 +201,13 @@
   }
   function parseOrder(text) {
     const t = String(text).toLowerCase();
-    if (/(durcheinander|gemischt|mischen|zufall|zufällig|zufaellig|bunt|alle zusammen|gemeinsam|alles zusammen|wild)/.test(t)) return 'mix';
-    if (/(hintereinander|nacheinander|der reihe nach|eine nach der anderen|nach lektion|reihenfolge|einzeln|lektionsweise|nacheinander|eins nach dem anderen|erst|erste)/.test(t)) return 'seq';
+    if (/(durcheinander|misch|gemischt|mischen|zufall|zufällig|zufaellig|bunt|alle zusammen|gemeinsam|alles zusammen|wild)/.test(t)) return 'mix';
+    if (/(hintereinander|nacheinander|der reihe nach|eine nach der anderen|nach der anderen|nach dem anderen|reihe nach|nach lektion|reihenfolge|einzeln|lektionsweise|nacheinander|eins nach dem anderen|erst|erste)/.test(t)) return 'seq';
     return null;
   }
   function yesNo(text) {
     const t = deNorm(text);
-    if (/\b(nein|nee|falsch|nicht richtig|stimmt nicht|anders)\b/.test(t)) return 'no';
+    if (/\b(nein|nee|ne|noe|nö|nope|falsch|nicht richtig|stimmt nicht|anders)\b/.test(t)) return 'no';
     if (/\b(ja|jo|jawohl|genau|richtig|stimmt|okay|ok|passt|klar|gerne|yes|sicher|na klar|los|weiter)\b/.test(t)) return 'yes';
     return null;
   }
