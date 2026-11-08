@@ -21,7 +21,9 @@
   /* ---------- Sprachausgabe ---------- */
   const TTS = {
     voice: null, cancelCur: null,
-    load() { if (!('speechSynthesis' in window)) return; const p = () => { const de = speechSynthesis.getVoices().filter(v => /^de([-_]|$)/i.test(v.lang)); this.voice = de.find(v => /de[-_]DE/i.test(v.lang)) || de[0] || null; }; p(); speechSynthesis.onvoiceschanged = p; },
+    list() { return speechSynthesis.getVoices().filter(v => /^de([-_]|$)/i.test(v.lang)); },
+    score(v) { const n = v.name + ' ' + v.lang; return (/natural|neural/i.test(n) ? 100 : 0) + (/online/i.test(n) ? 50 : 0) + (/google/i.test(n) ? 30 : 0) + (/de[-_]DE/i.test(v.lang) ? 10 : 0) - (/compact|espeak|hedda|hedda|stefan|katja(?!.*online)/i.test(n) && !/online|natural/i.test(n) ? 5 : 0); },
+    load() { if (!('speechSynthesis' in window)) return; const p = () => { const de = this.list().sort((a, b) => this.score(b) - this.score(a)); const saved = store.get('voiceName', ''); this.voice = de.find(v => v.name === saved) || de[0] || null; fillVoices(de); }; p(); speechSynthesis.onvoiceschanged = p; },
     speak(text, rate = .95) {
       return new Promise(res => {
         if (!text || !('speechSynthesis' in window)) { res(); return; }
@@ -322,6 +324,8 @@
   /* ---------- Start ---------- */
   $('#goVoice').onclick = () => { TTS.speak(''); startVoice(); };
   $('#goVisual').onclick = () => { buildChips(); show('vsetup'); };
+  function fillVoices(de) { const sel = $('#voiceSel'); if (!sel) return; sel.innerHTML = ''; de.forEach(v => { const o = document.createElement('option'); o.value = v.name; o.textContent = v.name.replace(/^Microsoft |^Google /, m => m) + (/natural|neural|online/i.test(v.name) ? ' ★' : ''); if (TTS.voice && TTS.voice.name === v.name) o.selected = true; sel.appendChild(o); }); }
+  $('#voiceSel').addEventListener('change', e => { store.set('voiceName', e.target.value); TTS.voice = TTS.list().find(v => v.name === e.target.value) || TTS.voice; TTS.speak('Ich spreche so: wikus, amare, puella.', 1); });
   $('#footInfo').textContent = `${V.length} Wörter · Lektion ${LESSONS[0]}–${LESSONS[LESSONS.length - 1]}`;
   if (!SR) $('#noSR').style.display = 'block';
   TTS.load(); buildChips();
