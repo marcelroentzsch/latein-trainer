@@ -127,14 +127,24 @@
     }
     return forms;
   }
-  function matchLatin(alts, item, all) {
+  const relTol = n => n <= 2 ? 0 : n <= 3 ? 1 : n <= 6 ? 2 : n <= 10 ? 3 : 4;
+  // pool (optional): Wörter der gewählten Lektionen. Dann reicht auch ein ungenauer Treffer,
+  // solange das Zielwort klar das ähnlichste Wort der Lektionen ist (z. B. "wir" für via).
+  function matchLatin(alts, item, all, pool) {
     const forms = latAccepted(item, all).map(latKey).filter(Boolean);
+    let others = null;
+    if (pool) { others = []; pool.forEach(p => { if (p.id !== item.id) latAccepted(p, all).forEach(f => { const k = latKey(f); if (k) others.push(k); }); }); }
     for (const alt of alts) {
       const cands = new Set([latKey(alt)]);
       String(alt).split(/\s+/).forEach(w => cands.add(latKey(w)));
       for (const c of cands) {
         if (!c) continue;
-        for (const fk of forms) { if (lev(c, fk) <= tolFor(Math.max(fk.length, 1))) return true; }
+        let best = 99, bestLen = 1;
+        for (const fk of forms) { const d = lev(c, fk); if (d <= tolFor(Math.max(fk.length, 1))) return true; if (d < best) { best = d; bestLen = fk.length; } }
+        if (others && c.length >= 2 && best <= relTol(bestLen)) {
+          let o = 99; for (const k of others) { const d = lev(c, k); if (d < o) o = d; if (o <= best) break; }
+          if (best < o) return true;
+        }
       }
     }
     return false;

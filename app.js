@@ -20,7 +20,7 @@
 
   /* ---------- Sprachausgabe ---------- */
   const TTS = {
-    voice: null, cancelCur: null,
+    voice: null, cancelCur: null, factor: store.get('tempo', 1.16),
     list() { return speechSynthesis.getVoices().filter(v => /^de([-_]|$)/i.test(v.lang)); },
     score(v) { const n = v.name + ' ' + v.lang; return (/natural|neural/i.test(n) ? 100 : 0) + (/online/i.test(n) ? 50 : 0) + (/google/i.test(n) ? 30 : 0) + (/de[-_]DE/i.test(v.lang) ? 10 : 0) - (/compact|espeak|hedda|hedda|stefan|katja(?!.*online)/i.test(n) && !/online|natural/i.test(n) ? 5 : 0); },
     load() { if (!('speechSynthesis' in window)) return; const p = () => { const de = this.list().sort((a, b) => this.score(b) - this.score(a)); const saved = store.get('voiceName', ''); this.voice = de.find(v => v.name === saved) || de[0] || null; fillVoices(de); }; p(); speechSynthesis.onvoiceschanged = p; },
@@ -28,7 +28,7 @@
       return new Promise(res => {
         if (!text || !('speechSynthesis' in window)) { res(); return; }
         let done = false; const fin = () => { if (done) return; done = true; clearTimeout(t); res(); };
-        const u = new SpeechSynthesisUtterance(text); u.lang = 'de-DE'; if (this.voice) u.voice = this.voice; u.rate = rate; u.onend = fin; u.onerror = fin;
+        const u = new SpeechSynthesisUtterance(text); u.lang = 'de-DE'; if (this.voice) u.voice = this.voice; u.rate = Math.min(2, rate * this.factor); u.onend = fin; u.onerror = fin;
         const t = setTimeout(fin, 3000 + text.length * 140);
         try { speechSynthesis.cancel(); } catch (e) { }
         setTimeout(() => { try { speechSynthesis.speak(u); } catch (e) { fin(); } }, 40);
@@ -171,6 +171,23 @@
     if (r && r.alts && r.alts[0]) ui.heard(r.alts[0]); else ui.heard('');
     return alive(id) ? r : null;
   }
+  // Spricht und hört gleichzeitig zu: man darf schon während der Frage antworten.
+  // Das eigene Echo (Wörter, die sie gerade selbst sagt) wird ignoriert.
+  async function sayListen(id, text, ms = 9000) {
+    if (!alive(id)) return null;
+    ui.cap(text); ui.status('speaking'); let speaking = true, tEnd = 0, extra = 0;
+    TTS.speak(text).then(() => { speaking = false; tEnd = Date.now(); if (alive(id)) ui.status('listening'); });
+    const spoken = new Set(L.deNorm(text).split(/\s+/).filter(Boolean));
+    while (alive(id)) {
+      const r = await Bus.wait(speaking ? 15000 : ms);
+      if (!alive(id)) return null;
+      if (!r) { if (speaking) { await sleep(300); continue; } if (extra++ < 1 && Date.now() - tEnd < 4000) continue; ui.status('idle'); return null; }
+      const echo = speaking && r.src === 'voice' && r.alts.every(a => L.deNorm(a).split(/\s+/).filter(Boolean).every(w => spoken.has(w)));
+      if (echo) continue;
+      TTS.cancel(); ui.status('idle'); ui.heard(r.alts[0] || ''); return r;
+    }
+    return null;
+  }
   const firstParse = (alts, fn) => { for (const a of alts) { const v = fn(a); if (v) return v; } return null; };
 
   async function startVoice() {
@@ -187,46 +204,40 @@
   function stopVoice() { Sp.active = false; Sp.run++; Bus.gate = false; Bus.pending = null; Bus.early = null; TTS.cancel(); STT.abort(); try { Sp.wake && Sp.wake.release(); } catch (e) { } }
 
   async function setupDialog(id) {
-    Bus.gate = true;
-    await say(id, 'Hallo! Welche Lektionen möchtest du lernen? Du kannst zum Beispiel sagen: eins bis sieben. Oder: alle Lektionen.');
-    let lessons = null, misses = 0;
+    Bus.gate = true; Bus.early = null;
+    let lessons = null, misses = 0, r = await sayListen(id, 'Hallo! Welche Lektionen möchtest du lernen?');
     while (alive(id) && !lessons) {
-      const r = await listenFor(id);
       if (!alive(id)) return null;
-      if (!r) { misses++; await say(id, misses < 2 ? 'Ich habe nichts gehört. Welche Lektionen möchtest du lernen?' : 'Sag zum Beispiel: eins bis sieben. Oder tippe die Zahlen unten ein.'); continue; }
-      const cmd = L.parseCommand(r.alts.join(' ')); if (cmd === 'stop') { return null; }
-      const parsed = firstParse(r.alts, t => L.parseLessons(t));
-      if (!parsed) { await say(id, 'Das habe ich nicht verstanden. Sag zum Beispiel: eins bis sieben.'); continue; }
-      await say(id, `${L.describeLessons(parsed)}. Stimmt das?`);
-      let c = await listenFor(id, 7000);
-      if (!c) { await say(id, `${L.describeLessons(parsed)}. Ist das richtig?`); c = await listenFor(id, 7000); }
-      if (!alive(id)) return null;
-      const yn = c ? firstParse(c.alts, t => L.yesNo(t)) : 'yes';
-      if (yn === 'no') { await say(id, 'Okay. Welche Lektionen möchtest du lernen?'); continue; }
-      const again = (c && yn !== 'yes') ? firstParse(c.alts, t => L.parseLessons(t)) : null;
-      lessons = again || parsed;
+      if (!r) { misses++; r = await sayListen(id, misses < 2 ? 'Welche Lektionen möchtest du lernen?' : 'Welche Lektionen? Du kannst die Zahlen auch unten eintippen.'); continue; }
+      if (L.parseCommand(r.alts.join(' ')) === 'stop') return null;
+      lessons = firstParse(r.alts, t => L.parseLessons(t));
+      if (!lessons) r = await sayListen(id, 'Das habe ich nicht verstanden. Welche Lektionen möchtest du lernen?');
     }
     if (!alive(id) || !lessons) return null;
-    ui.prompt(L.describeLessons(lessons));
-    await say(id, 'Soll ich eine Lektion nach der anderen abfragen, oder alle Wörter durcheinander? Sag: hintereinander, oder: durcheinander.');
-    let order = null; misses = 0;
-    while (alive(id) && !order) {
-      const r = await listenFor(id);
-      if (!alive(id)) return null;
-      if (!r) { misses++; await say(id, misses < 2 ? 'Hintereinander oder durcheinander?' : 'Sag: hintereinander. Oder: durcheinander. Du kannst auch unten eintippen.'); continue; }
-      if (L.parseCommand(r.alts.join(' ')) === 'stop') return null;
-      order = firstParse(r.alts, t => L.parseOrder(t));
-      if (!order) await say(id, 'Das habe ich nicht verstanden. Hintereinander oder durcheinander?');
-    }
+    const desc = L.describeLessons(lessons);
+    ui.prompt(desc);
+    let order = 'seq';
+    if (lessons.length > 1) {
+      await say(id, `${desc}. Nacheinander oder gemischt?`);
+      order = null; misses = 0;
+      while (alive(id) && !order) {
+        const o = await listenFor(id);
+        if (!alive(id)) return null;
+        if (!o) { misses++; await say(id, misses < 2 ? 'Nacheinander oder gemischt?' : 'Nacheinander oder gemischt? Du kannst auch unten eintippen.'); continue; }
+        if (L.parseCommand(o.alts.join(' ')) === 'stop') return null;
+        order = firstParse(o.alts, t => L.parseOrder(t));
+        if (!order) await say(id, 'Das habe ich nicht verstanden. Nacheinander oder gemischt?');
+      }
+    } else await say(id, `${desc}.`);
     if (!alive(id)) return null;
     const items = V.filter(v => lessons.includes(v.lesson));
     ui.prompt('');
-    await say(id, `Los geht's! Ich nenne dir ein Wort, du sagst mir die Übersetzung. Wenn du Hilfe brauchst, sag Tipp. Wenn du es nicht weißt, sag: weiß ich nicht.`);
+    await say(id, "Los geht's!");
     return { items, order };
   }
 
   async function quiz(id, items, order) {
-    Sp.lastItems = items; Sp.order = order; Bus.gate = true;
+    Sp.lastItems = items; Sp.items = items; Sp.order = order; Bus.gate = true;
     const queue = L.buildQueue(items, order), total = items.length; let done = 0, first = 0; const missed = new Set(); const tried = new Set(); let lastLesson = null, userStop = false;
     ui.buttons(true);
     while (queue.length && alive(id)) {
@@ -268,7 +279,7 @@
       silent = 0;
       const alts = r.alts, cmds = alts.map(L.parseCommand).filter(Boolean);
       if (cmds.includes('stop')) return 'stop';
-      const correct = dir === 'l2d' ? L.matchGerman(alts, item) : L.matchLatin(alts, item, V);
+      const correct = dir === 'l2d' ? L.matchGerman(alts, item) : L.matchLatin(alts, item, V, Sp.items);
       if (cmds.includes('giveup') && !correct) { await reveal(id, item); return 'wrong'; }
       if (correct) {
         Bus.gate = false; ui.pic(item); ui.hint('');
@@ -326,6 +337,8 @@
   $('#goVisual').onclick = () => { buildChips(); show('vsetup'); };
   function fillVoices(de) { const sel = $('#voiceSel'); if (!sel) return; sel.innerHTML = ''; de.forEach(v => { const o = document.createElement('option'); o.value = v.name; o.textContent = v.name.replace(/^Microsoft |^Google /, m => m) + (/natural|neural|online/i.test(v.name) ? ' ★' : ''); if (TTS.voice && TTS.voice.name === v.name) o.selected = true; sel.appendChild(o); }); }
   $('#voiceSel').addEventListener('change', e => { store.set('voiceName', e.target.value); TTS.voice = TTS.list().find(v => v.name === e.target.value) || TTS.voice; TTS.speak('Ich spreche so: wikus, amare, puella.', 1); });
+  $('#tempoSel').value = String(TTS.factor); if ($('#tempoSel').value !== String(TTS.factor)) $('#tempoSel').value = '1.16';
+  $('#tempoSel').addEventListener('change', e => { TTS.factor = parseFloat(e.target.value); store.set('tempo', TTS.factor); TTS.speak('Ich spreche jetzt so schnell.', .95); });
   $('#footInfo').textContent = `${V.length} Wörter · Lektion ${LESSONS[0]}–${LESSONS[LESSONS.length - 1]}`;
   if (!SR) $('#noSR').style.display = 'block';
   TTS.load(); buildChips();

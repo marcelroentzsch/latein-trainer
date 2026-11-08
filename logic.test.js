@@ -56,6 +56,10 @@ ok('latin wrong', !L.matchLatin(['villa'], w('puella'))); ok('latin wrong short'
 ok('novus', L.matchLatin(['novus'], w('novus'))); ok('nowus', L.matchLatin(['nowus'], w('novus')));
 ok('uns gegenseitig', L.matchLatin(['nobis'], w('nōs (Akk.)'), V)); ok('weil gegenseitig', L.matchLatin(['quod'], w('quia'), V));
 ok('ex', L.matchLatin(['ex'], w('ē / ex'))); ok('ab', L.matchLatin(['ab'], w('ā / ab')));
+const pool13 = V.filter(v => v.lesson <= 3);
+ok('wir->via (Pool)', L.matchLatin(['wir'], w('via'), V, pool13)); ok('wir->via (ohne Pool strikt)', !L.matchLatin(['wir'], w('via'), V));
+ok('wir !-> puella', !L.matchLatin(['wir'], w('puella'), V, pool13));
+ok('Pool: falsches Wort', !L.matchLatin(['villa'], w('puella'), V, pool13)); ok('Pool: kurz', !L.matchLatin(['ad'], w('et'), V, pool13));
 // Aussprache
 eq('pron1', L.pron('cūr?'), 'kur'); eq('pron2', L.pron('vīcus'), 'wikus'); eq('pron3', L.pron('quid?'), 'kwid');
 eq('pron4', L.pron('amāre, amō'), 'amare, amo'); eq('pron5', L.pron('iam'), 'jam'); eq('pron6', L.pron('aedificium'), 'ädifikium'); eq('pron7', L.pron('deus'), 'de-us');

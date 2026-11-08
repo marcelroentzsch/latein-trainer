@@ -19,10 +19,9 @@ const { chromium } = require('playwright');
     window.__responder = () => {
       const cap = document.querySelector('#sCap').textContent, prompt = document.querySelector('#sPrompt').textContent;
       const sp = window.__spoken[window.__spoken.length - 1] || '';
-      if (/Welche Lektionen/.test(sp) && !window.__lessonDone) { window.__lessonDone = 1; return ['Eins bis drei']; }
-      if (/Stimmt das/.test(sp)) return ['ja'];
-      if (/hintereinander/.test(sp) && !window.__orderDone) { window.__orderDone = 1; return ['hintereinander']; }
-      if (/Los geht/.test(sp) && !window.__go) { window.__go = 1; }
+      if (/Welche Lektionen/.test(cap) && !window.__lessonDone) { window.__lessonDone = 1; return ['Eins bis drei']; }
+      if (/Nacheinander/.test(cap) && !window.__orderDone) { window.__orderDone = 1; return ['am liebsten nacheinander bitte']; }
+      if (/Los geht/.test(cap) && !window.__go) { window.__go = 1; }
       const cur = A.Sp.cur; if (!cur || !A.Bus.gate) return null; const item = cur.item, dir = cur.dir; const k = item.id; seen[k] = (seen[k] || 0) + 1; const n = seen[k];
       if (!window.__first) window.__first = k;
       if (k === window.__first) { if (n === 1) return ['gib mir einen tipp']; if (n === 2) return ['noch ein tipp']; if (n === 3) return ['weiß ich nicht']; }
