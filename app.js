@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const VERSION = '2.1';
+  const VERSION = '2.2';
   const L = window.Logic, V = window.VOCAB, Ic = window.Icons, Gem = window.Gem;
   const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
   const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
@@ -30,13 +30,22 @@
   function tone(freqs, dur = .12) { try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); const t = ac.currentTime; freqs.forEach((f, i) => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = f; g.gain.setValueAtTime(.12, t + i * dur); g.gain.exponentialRampToValueAtTime(.001, t + (i + 1) * dur); o.connect(g); g.connect(ac.destination); o.start(t + i * dur); o.stop(t + (i + 1) * dur); }); } catch (e) { } }
   const sfx = { ok: () => tone([660, 880, 1100]), bad: () => tone([240, 190], .18) };
   function browserSay(text) { try { const u = new SpeechSynthesisUtterance(text); u.lang = 'de-DE'; const v = speechSynthesis.getVoices().filter(x => /^de/i.test(x.lang)); const best = v.find(x => /natural|online/i.test(x.name)) || v.find(x => /google/i.test(x.name)) || v[0]; if (best) u.voice = best; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { } }
-  const clipItems = items => items.map(i => ({ id: String(i.id), text: Gem.laText(L.latForms(i.la)[0]) }));
+  // Zweiteilige Wörter wie "neque … neque" bleiben vollständig
+  const twoPart = it => /…/.test(it.la);
+  const laShow = it => twoPart(it) ? it.la : L.latDisplayFirst(it.la);
+  const laSay = (it, sep) => Gem.laText(twoPart(it) ? it.la.replace(/\([^)]*\)|[?!]/g, '').replace(/\s*…\s*/g, sep).trim() : L.latForms(it.la)[0]);
+  const firstKey = it => twoPart(it) ? L.latKey(it.la) + '2' : L.latKey(L.latForms(it.la)[0]);
+  const keyCount = {}; V.forEach(v => { const k = firstKey(v); keyCount[k] = (keyCount[k] || 0) + 1; });
+  const ambiguous = it => !!it.q || keyCount[firstKey(it)] > 1;      // z. B. "in (+ Abl.)" / "in (+ Akk.)", "nōs (Nom.)" / "nōs (Akk.)"
+  const deAsk = (it, n) => it.q || L.shortDe(it, n);
+  let toastT = 0; const toast = t => { const e = $('#toast'); clearTimeout(toastT); e.textContent = t || ''; e.style.display = t ? 'block' : 'none'; if (t) toastT = setTimeout(() => toast(''), 10000); };
+  const clipItems = items => items.map(i => ({ id: String(i.id), text: laSay(i, ' ') }));
   const preload = lesson => Gem.loadLesson(lesson, clipItems(V.filter(v => v.lesson === lesson)));
   let sayTok = 0;
   async function sayLa(item) {
     const tok = ++sayTok, id = String(item.id); let ok = false;
     try { ok = await Gem.playClip(id); } catch (e) { }
-    if (!ok && Gem.hasKey()) { try { await Promise.race([preload(item.lesson), sleep(9000)]); if (tok !== sayTok) return; ok = await Gem.playClip(id); } catch (e) { } }
+    if (!ok && Gem.hasKey()) { toast('Stimme wird geladen …'); try { await Promise.race([preload(item.lesson), sleep(9000)]); if (tok !== sayTok) return; if (tok === sayTok) toast(''); ok = await Gem.playClip(id); } catch (e) { } if (tok === sayTok) toast(''); }
     if (!ok && tok === sayTok) browserSay(L.pron(item.la));
   }
 
@@ -46,7 +55,7 @@
   function renderHome() {
     $('#stStreak').textContent = '🔥 ' + (P.day === dayKey(Date.now()) || P.day === dayKey(Date.now() - DAY) ? P.streak : 0);
     $('#stXp').textContent = '⭐ ' + P.xp;
-    const due = dueWords().length; $('#revInfo').textContent = due ? due + ' Wörter sind heute dran' : 'Gerade ist nichts fällig';
+    const due = dueWords().length; $('#revInfo').textContent = due ? (due === 1 ? '1 Wort ist' : due + ' Wörter sind') + ' heute dran' : 'Gerade ist nichts fällig'; $('#goRev').style.opacity = due ? 1 : .55;
     const g = $('#grid'); g.innerHTML = '';
     LESSONS.forEach(n => { const m = mastery(n), cnt = V.filter(v => v.lesson === n).length; const b = el('button', 'lcard', `<span class="ring" style="--p:${m}"><span>${n}</span></span><div><b>Lektion ${n}</b><small>${m >= 95 ? '⭐⭐⭐' : m >= 70 ? '⭐⭐' : m >= 40 ? '⭐' : cnt + ' Wörter'}</small></div>`); b.onclick = () => openSheet(n); g.appendChild(b); });
     $('#ver').textContent = `Version ${VERSION} · ${V.length} Wörter`;
@@ -72,8 +81,8 @@
      LERNEN (gemischte Übungen)
      ===================================================================== */
   const S = { steps: [], i: 0, words: [], wrong: new Set(), retried: new Set(), pool: [], cur: null, locked: false };
-  const laFirst = it => L.latDisplayFirst(it.la);
-  const buildable = it => { const w = laFirst(it); return w.length >= 3 && w.length <= 9 && !/[\s.…?!]/.test(w); };
+  const laFirst = laShow;
+  const buildable = it => { const w = laFirst(it); return w.length >= 3 && w.length <= 9 && !/[\s.…?!]/.test(w) && !twoPart(it); };
   const picOk = it => !/^(txt|num):/.test(it.icon);
   function startLearn(lesson) {
     let words;
@@ -81,9 +90,9 @@
     else { const items = V.filter(v => v.lesson === lesson), now = Date.now(); const due = items.filter(v => W(v.id).b > 0 && W(v.id).due <= now).sort((a, b) => W(a.id).b - W(b.id).b); const fresh = items.filter(v => W(v.id).b === 0); words = due.slice(0, 6).concat(fresh).slice(0, 6); if (words.length < 6) words = words.concat(items.filter(v => !words.includes(v)).sort((a, b) => W(a.id).b - W(b.id).b)).slice(0, 6); if (Gem.hasKey()) preload(lesson); }
     const lessons = new Set(words.map(w => w.lesson)); S.pool = V.filter(v => lessons.has(v.lesson)); if (S.pool.length < 6) S.pool = V;
     const steps = [];
-    for (let c = 0; c < words.length; c += 3) { const ch = words.slice(c, c + 3); ch.filter(w => W(w.id).b === 0).forEach(w => steps.push({ type: 'intro', w })); L.shuffle(ch).forEach(w => steps.push({ type: picOk(w) && Math.random() < .4 ? 'pic' : 'mc_l2d', w })); }
+    for (let c = 0; c < words.length; c += 3) { const ch = words.slice(c, c + 3); ch.filter(w => W(w.id).b === 0).forEach(w => steps.push({ type: 'intro', w })); L.shuffle(ch).forEach(w => steps.push({ type: picOk(w) && !ambiguous(w) && Math.random() < .4 ? 'pic' : 'mc_l2d', w })); }
     if (words.length >= 4) steps.push({ type: 'pairs', ws: L.shuffle(words).slice(0, 4) });
-    L.shuffle(words).forEach(w => { const t = pick(['mc_d2l', 'listen', 'build']); steps.push({ type: t === 'build' && !buildable(w) ? 'mc_d2l' : t, w }); });
+    L.shuffle(words).forEach(w => { let t = pick(['mc_d2l', 'listen', 'build']); if (t === 'build' && !buildable(w)) t = 'mc_d2l'; if (t === 'listen' && ambiguous(w)) t = 'mc_l2d'; steps.push({ type: t, w }); });
     S.steps = steps; S.i = 0; S.words = words; S.wrong = new Set(); S.retried = new Set();
     show('learn'); renderStep();
   }
@@ -97,7 +106,7 @@
     const mk = dir => { let o = L.makeOptions(st.w, dir, S.pool); if (o.length < 3) o = L.makeOptions(st.w, dir, V); return o; };
     if (st.type === 'intro') { head('Neues Wort'); card(st.w, { word: st.w.la, sub: st.w.de, speak: true }); sayLa(st.w); const b = el('button', 'btn', 'Weiter'); b.onclick = () => { S.i++; renderStep(); }; ex.appendChild(b); }
     else if (st.type === 'mc_l2d') { head('Was heißt das auf Deutsch?'); card(st.w, { word: st.w.la, speak: true }); sayLa(st.w); options(mk('l2d')); }
-    else if (st.type === 'mc_d2l') { head('Wie heißt das auf Latein?'); card(st.w, { word: L.shortDe(st.w, 2) }); options(mk('d2l')); }
+    else if (st.type === 'mc_d2l') { head('Wie heißt das auf Latein?'); card(st.w, { word: deAsk(st.w, 2) }); options(mk('d2l')); }
     else if (st.type === 'listen') { head('Was hörst du?'); const b = el('button', 'spk big', '🔊'); b.onclick = () => sayLa(st.w); ex.appendChild(b); sayLa(st.w); options(mk('l2d')); }
     else if (st.type === 'pic') { head('Welches Bild passt?'); card(st.w, { word: st.w.la, speak: true, noPic: true }); sayLa(st.w); const others = L.shuffle(S.pool.filter(o => o.id !== st.w.id && picOk(o) && o.icon !== st.w.icon)).filter((o, i, a) => a.findIndex(x => x.icon === o.icon) === i).slice(0, 2); options(L.shuffle([{ item: st.w, ok: true }].concat(others.map(o => ({ item: o, ok: false })))).map(o => Object.assign(o, { html: Ic.svg(o.item.icon) })), 'pics'); }
     else if (st.type === 'pairs') renderPairs(st, ex, head);
@@ -105,17 +114,18 @@
   }
   function renderPairs(st, ex, head) {
     head('Finde die Paare'); const box = el('div', 'opts pairs'); let sel = null, left = st.ws.length, miss = false;
-    const A = L.shuffle(st.ws).map(w => ({ w, side: 'la', text: laFirst(w) })), B = L.shuffle(st.ws).map(w => ({ w, side: 'de', text: L.shortDe(w, 1) }));
+    const laL = w => ambiguous(w) ? w.la : laFirst(w), deL = w => deAsk(w, 1); const same = (x, y) => x.id === y.id || (laL(x) === laL(y) && deL(x) === deL(y));
+    const A = L.shuffle(st.ws).map(w => ({ w, side: 'la', text: laL(w) })), B = L.shuffle(st.ws).map(w => ({ w, side: 'de', text: deL(w) }));
     A.forEach((a, i) => [a, B[i]].forEach(c => { const b = el('button', 'opt', esc(c.text)); b.dataset.id = c.w.id; b.dataset.side = c.side; b.onclick = () => {
       if (b.classList.contains('ok') || S.locked) return; if (c.side === 'la') sayLa(c.w);
       if (!sel || sel.c.side === c.side) { if (sel) sel.b.classList.remove('sel'); sel = { b, c }; b.classList.add('sel'); return; }
       const o = sel; sel = null; o.b.classList.remove('sel');
-      if (o.c.w.id === c.w.id) { [b, o.b].forEach(x => x.classList.add('ok')); sfx.ok(); if (--left === 0) { S.locked = true; setTimeout(() => { S.i++; renderStep(); }, 600); } }
+      if (same(o.c.w, c.w)) { [b, o.b].forEach(x => x.classList.add('ok')); sfx.ok(); if (--left === 0) { S.locked = true; setTimeout(() => { S.i++; renderStep(); }, 600); } }
       else { miss = true; S.wrong.add(c.w.id); S.wrong.add(o.c.w.id); [b, o.b].forEach(x => x.classList.add('bad')); sfx.bad(); setTimeout(() => [b, o.b].forEach(x => x.classList.remove('bad')), 500); }
     }; box.appendChild(b); })); ex.appendChild(box);
   }
   function renderBuild(st, ex, head, card) {
-    head('Setze das lateinische Wort zusammen'); card(st.w, { word: L.shortDe(st.w, 2) });
+    head('Setze das lateinische Wort zusammen'); card(st.w, { word: deAsk(st.w, 2) });
     const target = laFirst(st.w), slots = el('div', 'slots'), tiles = el('div', 'tiles'); let cur = [];
     const check = () => { if (cur.length < [...target].length) return; const ok = cur.map(x => x.ch).join('') === target; S.locked = true; answer(ok, st.w); };
     L.shuffle([...target].map(ch => ({ ch }))).forEach(t => { const b = el('button', 'tile', esc(t.ch)); t.b = b; b.onclick = () => { if (S.locked) return; b.classList.add('used'); const s = el('button', 'tile', esc(t.ch)); t.s = s; cur.push(t); s.onclick = () => { if (S.locked) return; cur = cur.filter(x => x !== t); s.remove(); b.classList.remove('used'); }; slots.appendChild(s); check(); }; tiles.appendChild(b); });
@@ -174,8 +184,9 @@ VERBOTEN
   const T = { live: null, active: false };
   const tui = { state(t) { $('#tState').textContent = t; }, orb(c) { $('#orb').className = 'orb ' + c; $('#orb').textContent = c === 'speak' ? '🔊' : '🎤'; $('#orb').style.transform = ''; }, notice(t) { const n = $('#tNotice'); n.textContent = t || ''; n.style.display = t ? 'block' : 'none'; },
     prog() { $('#tBar').style.width = (T.total ? T.done / T.total * 100 : 0) + '%'; $('#tCnt').textContent = T.total ? T.done + '/' + T.total : ''; } };
-  const sayText = it => Gem.laText(L.latForms(it.la)[0]);
-  const question = () => { const it = T.cur, d = T.dir; return { nummer: T.done + 1, von: T.total, richtung: d === 'l2d' ? 'Latein → Deutsch' : 'Deutsch → Latein', sage: d === 'l2d' ? sayText(it) : (it.q || L.shortDe(it, 2)), richtige_antworten: d === 'l2d' ? L.deVariantsRaw(it.de).concat(it.alt || []) : L.latAccepted(it, V) }; };
+  const sayText = it => laSay(it, ', ');
+  const deAll = it => { const k = firstKey(it); const out = []; V.filter(v => v.id === it.id || (keyCount[k] > 1 && firstKey(v) === k)).forEach(v => L.deVariantsRaw(v.de).concat(v.alt || []).forEach(x => { if (!out.includes(x)) out.push(x); })); return out; };
+  const question = () => { const it = T.cur, d = T.dir; return { nummer: T.done + 1, von: T.total, richtung: d === 'l2d' ? 'Latein → Deutsch' : 'Deutsch → Latein', sage: d === 'l2d' ? sayText(it) : (it.q || L.shortDe(it, 2)), richtige_antworten: d === 'l2d' ? deAll(it) : (twoPart(it) ? [sayText(it)] : L.latAccepted(it, V)) }; };
   function tShowSolved(it) { $('#tPrompt').textContent = it.la; $('#tHint').textContent = L.deVariantsRaw(it.de).slice(0, 2).join(', '); $('#tPic').innerHTML = Ic.svg(it.icon); }
   function tApply() { clearTimeout(T.pendT); const f = T.pending; T.pending = null; if (f) f(); }
   function tNext(pre, solved) {

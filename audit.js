@@ -1,0 +1,18 @@
+const { chromium } = require('playwright');
+(async () => { const b = await chromium.launch(); const p = await (await b.newContext({ viewport: { width: 390, height: 800 } })).newPage(); const errs = []; p.on('pageerror', e => errs.push(e.message));
+  await p.goto('http://localhost:8765/index.html'); await p.waitForSelector('.lcard');
+  // jede Lektion: 3 Lerneinheiten komplett durchspielen, alle Übungstypen rendern
+  const r = await p.evaluate(async () => { const A = window.__lt, out = [], types = {}; const sl = ms => new Promise(r => setTimeout(r, ms));
+    for (let n = 1; n <= 20; n++) for (let k = 0; k < 3; k++) { A.startLearn(n); let guard = 0;
+      while (document.querySelector('#learn.on') && guard++ < 60) { const st = A.S.steps[A.S.i]; if (!st) break; types[st.type] = (types[st.type] || 0) + 1;
+        if (st.type === 'intro') document.querySelector('#ex .btn').click();
+        else if (st.type === 'pairs') { const la = [...document.querySelectorAll('.pairs .opt[data-side=la]')], de = [...document.querySelectorAll('.pairs .opt[data-side=de]')]; const labels = la.map(x => x.textContent).concat(de.map(x => x.textContent)); if (new Set(la.map(x => x.textContent)).size < la.length) out.push('L' + n + ' doppelte Paar-Beschriftung: ' + labels.join(' | ')); la.forEach(x => { x.click(); de.find(d => d.dataset.id === x.dataset.id).click(); }); await sl(650); }
+        else if (st.type === 'build') { const t = [...document.querySelectorAll('.tiles .tile')]; const target = [...document.querySelector('.qcard') && A.L.latDisplayFirst(st.w.la)]; for (const ch of target) { const x = [...document.querySelectorAll('.tiles .tile:not(.used)')].find(y => y.textContent === ch); if (!x) { out.push('L' + n + ' build: Buchstabe fehlt ' + st.w.la); break; } x.click(); } if (!document.querySelector('.fbar.ok')) out.push('L' + n + ' build nicht ok: ' + st.w.la); document.querySelector('#fbNext').click(); }
+        else { const o = [...document.querySelectorAll('.opt')]; if (o.length !== 3) out.push('L' + n + ' ' + st.type + ' hat ' + o.length + ' Optionen: ' + st.w.la); if (o.filter(x => x.dataset.ok).length !== 1) out.push('L' + n + ' ' + st.type + ' nicht genau 1 richtig: ' + st.w.la); if (new Set(o.map(x => x.innerHTML)).size !== o.length) out.push('L' + n + ' ' + st.type + ' doppelte Option: ' + st.w.la); o.find(x => x.dataset.ok).click(); document.querySelector('#fbNext').click(); } }
+      if (!document.querySelector('#end.on')) out.push('L' + n + ' Runde ' + k + ' endet nicht'); document.querySelector('#eHome').click(); }
+    // Sprech-Training: alle 300 Wörter, beide Richtungen
+    const T = A.T; let bad = 0; Object.assign(T, { lessons: null, cur: null, queue: [], total: 0, done: 0, first: 0, tried: new Set(), missed: new Set(), reveals: {}, ending: false });
+    A.onTool('lektionen_waehlen', { lektionen: Array.from({ length: 20 }, (_, i) => i + 1) }); let x = A.onTool('reihenfolge_waehlen', { reihenfolge: 'gemischt' }), n = 0, samples = [];
+    while (!x.ende && n++ < 700) { const f = x.frage; if (!f || !f.sage || !f.richtige_antworten.length) { bad++; out.push('Frage unvollständig: ' + JSON.stringify(x).slice(0, 200)); } if (/neque|nōs|valē|in$|ē$/.test(f ? f.sage : '') && samples.length < 8) samples.push(f.sage + ' -> ' + f.richtige_antworten.join(' / ')); x = A.onTool('antwort_melden', { art: n % 7 === 0 ? 'weiss_nicht' : 'richtig' }); }
+    out.push('Sprech-Training: ' + n + ' Schritte, fertig=' + !!x.ende + ', done=' + T.done + '/' + T.total); return { out, types, samples }; });
+  console.log(JSON.stringify(r.types)); r.out.forEach(x => console.log(' ·', x)); r.samples.forEach(x => console.log('   ', x)); console.log('Fehler:', errs); await b.close(); })();

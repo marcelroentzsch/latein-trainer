@@ -55,7 +55,7 @@
     async makeClips(items) {
       let done = 0;
       const run = async (group) => { const pcm = await this.tts(group.map(g => g.text).join(' <long pause> '), this.STYLE); const parts = this.split(pcm); if (parts.length !== group.length) return false; for (let i = 0; i < group.length; i++) await this.putClip(group[i].id, parts[i]); done += group.length; return true; };
-      for (let i = 0; i < items.length; i += 8) { const g = items.slice(i, i + 8); if (!(await run(g))) for (let k = 0; k < g.length; k += 2) { try { await run(g.slice(k, k + 2)); } catch (e) { if (e.status) throw e; } } if (this.onProgress) this.onProgress(done); }
+      for (let i = 0; i < items.length; i += 8) { const g = items.slice(i, i + 8); if (!(await run(g))) for (let k = 0; k < g.length; k++) { try { await run(g.slice(k, k + 1)); } catch (e) { if (e.status) throw e; } } if (this.onProgress) this.onProgress(done); }
       return done;
     },
     _loading: {},
