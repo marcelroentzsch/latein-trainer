@@ -1,375 +1,252 @@
 (function () {
   'use strict';
-  const L = window.Logic, V = window.VOCAB, Ic = window.Icons;
+  const VERSION = '2.0';
+  const L = window.Logic, V = window.VOCAB, Ic = window.Icons, Gem = window.Gem;
   const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
-  const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { } } };
-  const memo = store.get('dirMemo', {});           // merkt sich je Wort: zuletzt Latein->Deutsch (l2d) oder Deutsch->Latein (d2l)
-  const saveMemo = () => store.set('dirMemo', memo);
-  const pick = a => a[Math.floor(Math.random() * a.length)];
+  const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  let soundOn = store.get('soundOn', true);
+  const pick = a => a[Math.floor(Math.random() * a.length)];
   const LESSONS = [...new Set(V.map(v => v.lesson))].sort((a, b) => a - b);
+  const byId = {}; V.forEach(v => byId[v.id] = v);
+  const DAY = 864e5;
+
+  /* ---------- Fortschritt (Lernkartei) ---------- */
+  let P; try { P = JSON.parse(localStorage.getItem('lt2')) || {}; } catch (e) { P = {}; }
+  P.w = P.w || {}; P.xp = P.xp || 0; P.streak = P.streak || 0; P.memo = P.memo || {};
+  const save = () => { try { localStorage.setItem('lt2', JSON.stringify(P)); } catch (e) { } };
+  const W = id => P.w[id] || { b: 0, due: 0 };
+  const GAP = [0, 0, 1, 3, 7, 21];
+  function grade(id, ok) { const w = W(id); w.b = ok ? Math.min(5, w.b + 1) : 1; w.due = Date.now() + GAP[w.b] * DAY; P.w[id] = w; }
+  const dayKey = t => new Date(t).toDateString();
+  function touchStreak() { const today = dayKey(Date.now()); if (P.day === today) return; P.streak = P.day === dayKey(Date.now() - DAY) ? P.streak + 1 : 1; P.day = today; }
+  const mastery = n => { const it = V.filter(v => v.lesson === n); return Math.round(it.reduce((s, v) => s + Math.min(W(v.id).b, 4) / 4, 0) / it.length * 100); };
+  const dueWords = () => V.filter(v => W(v.id).b > 0 && W(v.id).due <= Date.now()).sort((a, b) => W(a.id).due - W(b.id).due);
 
   function show(id) { $$('.screen').forEach(s => s.classList.toggle('on', s.id === id)); window.scrollTo(0, 0); }
-  function toast(t) { alert(t); }
 
-  /* ---------- Töne ---------- */
+  /* ---------- Töne und Stimme ---------- */
   let ac = null;
-  function tone(freqs, dur = .12) { if (!soundOn) return; try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); const t = ac.currentTime; freqs.forEach((f, i) => { const o = ac.createOscillator(), g = ac.createGain(); o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(.0001, t + i * dur); g.gain.exponentialRampToValueAtTime(.22, t + i * dur + .02); g.gain.exponentialRampToValueAtTime(.0001, t + i * dur + dur); o.connect(g); g.connect(ac.destination); o.start(t + i * dur); o.stop(t + i * dur + dur + .03); }); } catch (e) { } }
+  function tone(freqs, dur = .12) { try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); const t = ac.currentTime; freqs.forEach((f, i) => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = f; g.gain.setValueAtTime(.12, t + i * dur); g.gain.exponentialRampToValueAtTime(.001, t + (i + 1) * dur); o.connect(g); g.connect(ac.destination); o.start(t + i * dur); o.stop(t + (i + 1) * dur); }); } catch (e) { } }
   const sfx = { ok: () => tone([660, 880, 1100]), bad: () => tone([240, 190], .18) };
-
-  /* ---------- Sprachausgabe ---------- */
-  const TTS = {
-    voice: null, cancelCur: null, factor: store.get('tempo', 1.16),
-    list() { return speechSynthesis.getVoices().filter(v => /^de([-_]|$)/i.test(v.lang)); },
-    score(v) { const n = v.name + ' ' + v.lang; return (/natural|neural/i.test(n) ? 100 : 0) + (/online/i.test(n) ? 50 : 0) + (/google/i.test(n) ? 30 : 0) + (/de[-_]DE/i.test(v.lang) ? 10 : 0) - (/compact|espeak|hedda|hedda|stefan|katja(?!.*online)/i.test(n) && !/online|natural/i.test(n) ? 5 : 0); },
-    load() { if (!('speechSynthesis' in window)) return; const p = () => { const de = this.list().sort((a, b) => this.score(b) - this.score(a)); const saved = store.get('voiceName', ''); this.voice = de.find(v => v.name === saved) || de[0] || null; fillVoices(de); }; p(); speechSynthesis.onvoiceschanged = p; },
-    speak(text, rate = .95) {
-      return new Promise(res => {
-        if (!text || !('speechSynthesis' in window)) { res(); return; }
-        let done = false; const fin = () => { if (done) return; done = true; clearTimeout(t); res(); };
-        const u = new SpeechSynthesisUtterance(text); u.lang = 'de-DE'; if (this.voice) u.voice = this.voice; u.rate = Math.min(2, rate * this.factor); u.onend = fin; u.onerror = fin;
-        const t = setTimeout(fin, 3000 + text.length * 140);
-        try { speechSynthesis.cancel(); } catch (e) { }
-        setTimeout(() => { try { speechSynthesis.speak(u); } catch (e) { fin(); } }, 40);
-        this.cancelCur = fin;
-      });
-    },
-    cancel() { try { speechSynthesis.cancel(); } catch (e) { } if (this.cancelCur) this.cancelCur(); }
-  };
-  const sayLa = (item, rate = .8) => TTS.speak(L.pron(item.la), rate);
-  const sayDe = item => TTS.speak(L.deSpeak(item), .95);
-
-  /* ---------- Spracherkennung ---------- */
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const STT = {
-    ok: !!SR, rec: null, denied: false,
-    async listenLLM(ms, ctx) {
-      const rec = await LLM.listen(ms, { strict: !!ctx.strict });
-      if (!rec) return null;
-      if (rec.error) { if (rec.error === 'mic') { this.denied = true; notice('Das Mikrofon ist nicht erlaubt. Du kannst unten eintippen. (Im Browser beim Schloss-Symbol das Mikrofon erlauben.)'); } return null; }
-      if (!rec.blob) return null;
-      if (rec.blob.size < 1500) return null;
-      try { ui.status('thinking'); const o = await LLM.interpret(ctx, rec); notice(''); return o.silent ? null : { alts: [o.transcript || ''], llm: o }; }
-      catch (e) {
-        LLM.lastError = e.message || String(e);
-        if (e.status === 400 || e.status === 401 || e.status === 403 || e.status === 404) { LLM.failed = true; notice('Die KI-Erkennung funktioniert nicht (' + LLM.lastError.slice(0, 120) + '). Ich nutze jetzt die normale Spracherkennung.'); }
-        else notice('Die KI ist gerade nicht erreichbar. Bitte noch einmal sagen.');
-        return null;
-      }
-    },
-    listen(ms = 9000, ctx) {
-      if (ctx && LLM.active()) return this.listenLLM(ms, ctx);
-      return new Promise(res => {
-        if (!SR || this.denied) { return; }          // ohne Mikrofon: nur Eingabe per Tipp/Tasten
-        let done = false; const r = new SR(); r.lang = 'de-DE'; r.interimResults = false; r.maxAlternatives = 5; r.continuous = false;
-        const fin = v => { if (done) return; done = true; clearTimeout(t); try { r.abort(); } catch (e) { } if (this.rec === r) this.rec = null; res(v); };
-        r.onresult = e => { const alts = []; for (const rs of e.results) for (let i = 0; i < rs.length; i++) alts.push(rs[i].transcript); fin(alts); };
-        r.onerror = e => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { STT.denied = true; notice('Das Mikrofon ist nicht erlaubt. Du kannst unten eintippen. (Im Chrome beim Schloss-Symbol das Mikrofon erlauben.)'); } fin(null); };
-        r.onend = () => fin(null);
-        const t = setTimeout(() => fin(null), ms);
-        try { r.start(); this.rec = r; } catch (e) { fin(null); }
-      });
-    },
-    abort() { try { this.rec && this.rec.abort(); } catch (e) { } try { LLM.cancelListen(); } catch (e) { } }
-  };
-  function notice(t) { const n = $('#sNotice'); n.textContent = t; n.style.display = t ? 'block' : 'none'; }
-
-  /* ---------- Eingabe-Bus: Mikrofon, Tippen und Knöpfe laufen zusammen ---------- */
-  const Bus = {
-    pending: null, early: null, gate: false,
-    wait(ms, ctx) {
-      return new Promise(res => {
-        if (this.early) { const e = this.early; this.early = null; res(e); return; }
-        this.pending = res;
-        STT.listen(ms, ctx).then(o => { if (this.pending === res) { this.pending = null; res(o ? (Array.isArray(o) ? { alts: o, src: 'voice' } : { alts: o.alts, src: 'voice', llm: o.llm }) : null); } });
-        if (!SR || STT.denied) { /* wartet auf Tippen/Knöpfe */ }
-      });
-    },
-    push(text, src = 'btn') {
-      if (!this.gate) return;
-      const m = { alts: [text], src };
-      TTS.cancel(); STT.abort();
-      if (this.pending) { const p = this.pending; this.pending = null; p(m); } else this.early = m;
-    }
-  };
+  function browserSay(text) { try { const u = new SpeechSynthesisUtterance(text); u.lang = 'de-DE'; const v = speechSynthesis.getVoices().filter(x => /^de/i.test(x.lang)); const best = v.find(x => /natural|online/i.test(x.name)) || v.find(x => /google/i.test(x.name)) || v[0]; if (best) u.voice = best; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { } }
+  const clipItems = items => items.map(i => ({ id: String(i.id), text: Gem.laText(L.latForms(i.la)[0]) }));
+  const preload = lesson => Gem.loadLesson(lesson, clipItems(V.filter(v => v.lesson === lesson)));
+  async function sayLa(item) { let ok = false; try { ok = await Gem.playClip(String(item.id)); } catch (e) { } if (!ok) { browserSay(L.pron(item.la)); if (Gem.hasKey()) preload(item.lesson); } }
 
   /* =====================================================================
-     BILDMODUS
+     START
      ===================================================================== */
-  const Vis = { items: [], queue: [], total: 0, done: 0, first: 0, missed: new Set(), cur: null, locked: false, lessons: [], order: 'seq' };
-  let selected = new Set(store.get('selLessons', [1]));
-  let visOrder = store.get('visOrder', 'seq');
-
-  function buildChips() {
-    const c = $('#chips'); c.innerHTML = '';
-    LESSONS.forEach(n => { const b = document.createElement('button'); b.className = 'chip' + (selected.has(n) ? ' on' : ''); b.textContent = n; b.onclick = () => { selected.has(n) ? selected.delete(n) : selected.add(n); refreshSel(); }; c.appendChild(b); });
-    refreshSel();
-    $$('#orderSeg button').forEach(b => { b.classList.toggle('on', b.dataset.o === visOrder); b.onclick = () => { visOrder = b.dataset.o; store.set('visOrder', visOrder); buildChips(); }; });
+  function renderHome() {
+    $('#stStreak').textContent = '🔥 ' + (P.day === dayKey(Date.now()) || P.day === dayKey(Date.now() - DAY) ? P.streak : 0);
+    $('#stXp').textContent = '⭐ ' + P.xp;
+    const due = dueWords().length; $('#revInfo').textContent = due ? due + ' Wörter sind heute dran' : 'Gerade ist nichts fällig';
+    const g = $('#grid'); g.innerHTML = '';
+    LESSONS.forEach(n => { const m = mastery(n), cnt = V.filter(v => v.lesson === n).length; const b = el('button', 'lcard', `<span class="ring" style="--p:${m}"><span>${n}</span></span><div><b>Lektion ${n}</b><small>${m >= 95 ? '⭐⭐⭐' : m >= 70 ? '⭐⭐' : m >= 40 ? '⭐' : cnt + ' Wörter'}</small></div>`); b.onclick = () => openSheet(n); g.appendChild(b); });
+    $('#ver').textContent = `Version ${VERSION} · ${V.length} Wörter`;
+    show('home');
   }
-  function refreshSel() {
-    $$('#chips .chip').forEach((b, i) => b.classList.toggle('on', selected.has(LESSONS[i])));
-    const n = V.filter(v => selected.has(v.lesson)).length;
-    $('#selInfo').textContent = n ? `${selected.size} Lektion(en) · ${n} Wörter` : 'Bitte mindestens eine Lektion wählen';
-    $('#startVisual').disabled = !n;
-    store.set('selLessons', [...selected]);
+  let sheetLesson = 1;
+  function openSheet(n) {
+    sheetLesson = n; const items = V.filter(v => v.lesson === n);
+    $('#shT').textContent = 'Lektion ' + n; $('#shInfo').textContent = `${items.length} Wörter · ${mastery(n)} % gelernt`;
+    const ul = $('#shList'); ul.innerHTML = '';
+    items.forEach(it => { const li = el('li', '', `<span class="ic">${Ic.svg(it.icon)}</span><div><b>${esc(it.la)}</b><small>${esc(it.de)}</small></div>`); const b = el('button', '', '🔊'); b.onclick = () => sayLa(it); li.appendChild(b); ul.appendChild(li); });
+    $('#sheet').classList.add('on'); if (Gem.hasKey()) preload(n);
   }
-  $('#selAll').onclick = () => { LESSONS.forEach(n => selected.add(n)); refreshSel(); };
-  $('#selNone').onclick = () => { selected.clear(); refreshSel(); };
-  $$('[data-upto]').forEach(b => b.onclick = () => { const n = +b.dataset.upto; selected = new Set(LESSONS.filter(l => l <= n)); refreshSel(); });
-  $('#startVisual').onclick = () => startVisual(V.filter(v => selected.has(v.lesson)), visOrder);
-
-  function startVisual(items, order) {
-    Vis.items = items; Vis.order = order; Vis.queue = L.buildQueue(items, order); Vis.total = items.length; Vis.done = 0; Vis.first = 0; Vis.missed = new Set(); Vis.tried = new Set();
-    show('vquiz'); nextCard();
-  }
-  function progress(bar, cnt, done, total) { $(bar).style.width = (total ? done / total * 100 : 0) + '%'; $(cnt).textContent = done + '/' + total; }
-  function nextCard() {
-    Vis.locked = false; $('#vFb').textContent = ''; $('#vFb').className = 'fb'; $('#vNext').style.display = 'none';
-    progress('#vBar', '#vCnt', Vis.done, Vis.total);
-    if (!Vis.queue.length) return endScreen('visual');
-    const item = Vis.queue.shift(); Vis.cur = item;
-    const dir = L.nextDir(memo, item.id); saveMemo(); Vis.dir = dir;
-    let opts = L.makeOptions(item, dir, Vis.items); if (opts.length < 3) opts = L.makeOptions(item, dir, V);
-    $('#vIcon').innerHTML = Ic.svg(item.icon);
-    $('#vWord').textContent = dir === 'l2d' ? item.la : L.shortDe(item, 2);
-    $('#vSmall').textContent = dir === 'l2d' ? 'Was heißt das auf Deutsch?' : 'Wie heißt das auf Latein?';
-    const o = $('#vOpts'); o.innerHTML = '';
-    opts.forEach(op => { const b = document.createElement('button'); b.className = 'opt'; b.textContent = op.text; b.onclick = () => choose(b, op); o.appendChild(b); });
-    Vis.opts = opts;
-    if (dir === 'l2d') sayLa(item);
-  }
-  function choose(btn, op) {
-    if (Vis.locked) return; Vis.locked = true;
-    const item = Vis.cur, fb = $('#vFb'), btns = $$('#vOpts .opt');
-    const pair = `${item.la} = ${L.deVariantsRaw(item.de).slice(0, 2).join(', ')}`;
-    if (Vis.dir === 'd2l') TTS.speak(L.pron(op.item.la), .8);
-    if (op.ok) {
-      btn.classList.add('ok'); btns.forEach(b => { if (b !== btn) b.classList.add('dim'); }); sfx.ok();
-      fb.className = 'fb ok'; fb.innerHTML = `${pick(['Super!', 'Richtig!', 'Genau!', 'Sehr gut!', 'Stark!'])}<small>${pair}</small>`;
-      if (!Vis.tried.has(item.id)) Vis.first++; Vis.done++; progress('#vBar', '#vCnt', Vis.done, Vis.total);
-      const after = Vis.dir === 'l2d' ? sayLa(item) : sleep(1000);
-      Promise.resolve(after).then(() => sleep(500)).then(() => { if ($('#vquiz').classList.contains('on') && Vis.cur === item) nextCard(); });
-    } else {
-      btn.classList.add('bad'); btns.forEach(b => { if (b.textContent === (Vis.opts.find(x => x.ok).text)) b.classList.add('ok'); else if (b !== btn) b.classList.add('dim'); }); sfx.bad();
-      fb.className = 'fb bad'; fb.innerHTML = `Nicht ganz.<small>${pair}</small>`;
-      Vis.tried.add(item.id); Vis.missed.add(item.id); L.requeue(Vis.queue, item);
-      setTimeout(() => sayLa(item), 600);
-      $('#vNext').style.display = 'block';
-    }
-  }
-  $('#vNext').onclick = () => { TTS.cancel(); nextCard(); };
-  $('#vSpk').onclick = () => { if (Vis.cur) sayLa(Vis.cur); };
-  $('#vClose').onclick = () => { TTS.cancel(); show('home'); };
-  $('#vSound').onclick = () => { soundOn = !soundOn; store.set('soundOn', soundOn); $('#vSound').textContent = soundOn ? '🔊' : '🔇'; };
-  $('#vSound').textContent = soundOn ? '🔊' : '🔇';
+  const closeSheet = () => $('#sheet').classList.remove('on');
+  $('#shX').onclick = closeSheet; $('#sheet').onclick = e => { if (e.target.id === 'sheet') closeSheet(); };
+  $('#shLearn').onclick = () => { closeSheet(); startLearn(sheetLesson); };
+  $('#shTalk').onclick = () => { closeSheet(); startTalk([sheetLesson]); };
+  $('#goRev').onclick = () => { if (dueWords().length) startLearn(null); };
+  $('#goTalk').onclick = () => startTalk(null);
+  $('#goSet').onclick = () => openSettings();
 
   /* =====================================================================
-     SPRACHMODUS
+     LERNEN (gemischte Übungen)
      ===================================================================== */
-  const Sp = { run: 0, active: false, paused: null, wake: null, lastItems: null, order: 'seq' };
-  const alive = id => Sp.active && Sp.run === id;
-  const PRAISE = ['Richtig!', 'Genau!', 'Super!', 'Sehr gut!', 'Stimmt!', 'Prima!', 'Das war richtig!'];
-  const WRONG = ['Nicht ganz. Versuch es noch einmal.', 'Fast! Probier es noch mal.', 'Das war leider nicht richtig. Noch ein Versuch.'];
-
-  const ui = {
-    status(s) { const m = $('#mic'); m.className = 'mic ' + (s === 'listening' ? 'listening' : s === 'speaking' ? 'speaking' : ''); m.textContent = s === 'speaking' ? '🔊' : '🎤'; $('#sState').textContent = { listening: 'Ich höre zu …', speaking: 'Ich spreche …', idle: ' ', paused: 'Pause', thinking: 'Ich überlege …' }[s] || ' '; },
-    prompt(t) { $('#sPrompt').textContent = t || ''; }, hint(t) { $('#sHint').textContent = t || ''; }, cap(t) { $('#sCap').textContent = t || ''; }, heard(t) { $('#sHeard').textContent = t ? '„' + t + '“' : ''; },
-    pic(item) { $('#sPic').innerHTML = item ? Ic.svg(item.icon) : ''; },
-    buttons(on) { ['#bHint', '#bRepeat', '#bGive'].forEach(s => $(s).disabled = !on); }
-  };
-  async function say(id, text, rate) { if (!alive(id)) return; ui.cap(text); ui.status('speaking'); await TTS.speak(text, rate); if (alive(id)) ui.status('idle'); }
-  async function listenFor(id, ms = 9000, ctx) {
-    if (!alive(id)) return null;
-    await sleep(250); if (!alive(id)) return null;
-    ui.status('listening'); const r = await Bus.wait(ms, ctx); ui.status('idle');
-    if (r && r.alts && r.alts[0]) ui.heard(r.alts[0]); else ui.heard('');
-    return alive(id) ? r : null;
+  const S = { steps: [], i: 0, words: [], wrong: new Set(), retried: new Set(), pool: [], cur: null, locked: false };
+  const laFirst = it => L.latDisplayFirst(it.la);
+  const buildable = it => { const w = laFirst(it); return w.length >= 3 && w.length <= 9 && !/[\s.…?!]/.test(w); };
+  const picOk = it => !/^(txt|num):/.test(it.icon);
+  function startLearn(lesson) {
+    let words;
+    if (lesson == null) words = dueWords().slice(0, 8);
+    else { const items = V.filter(v => v.lesson === lesson), now = Date.now(); const due = items.filter(v => W(v.id).b > 0 && W(v.id).due <= now).sort((a, b) => W(a.id).b - W(b.id).b); const fresh = items.filter(v => W(v.id).b === 0); words = due.slice(0, 6).concat(fresh).slice(0, 6); if (words.length < 6) words = words.concat(items.filter(v => !words.includes(v)).sort((a, b) => W(a.id).b - W(b.id).b)).slice(0, 6); if (Gem.hasKey()) preload(lesson); }
+    const lessons = new Set(words.map(w => w.lesson)); S.pool = V.filter(v => lessons.has(v.lesson)); if (S.pool.length < 6) S.pool = V;
+    const steps = [];
+    for (let c = 0; c < words.length; c += 3) { const ch = words.slice(c, c + 3); ch.filter(w => W(w.id).b === 0).forEach(w => steps.push({ type: 'intro', w })); L.shuffle(ch).forEach(w => steps.push({ type: picOk(w) && Math.random() < .4 ? 'pic' : 'mc_l2d', w })); }
+    if (words.length >= 4) steps.push({ type: 'pairs', ws: L.shuffle(words).slice(0, 4) });
+    L.shuffle(words).forEach(w => { const t = pick(['mc_d2l', 'listen', 'build']); steps.push({ type: t === 'build' && !buildable(w) ? 'mc_d2l' : t, w }); });
+    S.steps = steps; S.i = 0; S.words = words; S.wrong = new Set(); S.retried = new Set();
+    show('learn'); renderStep();
   }
-  // Spricht und hört gleichzeitig zu: man darf schon während der Frage antworten.
-  // Das eigene Echo (Wörter, die sie gerade selbst sagt) wird ignoriert.
-  async function sayListen(id, text, ms = 9000, ctx) {
-    if (!alive(id)) return null;
-    ui.cap(text); ui.status('speaking'); let speaking = true, tEnd = 0, extra = 0;
-    TTS.speak(text).then(() => { speaking = false; tEnd = Date.now(); if (alive(id)) ui.status('listening'); });
-    const spoken = new Set(L.deNorm(text).split(/\s+/).filter(Boolean));
-    while (alive(id)) {
-      const r = await Bus.wait(speaking ? 15000 : ms, ctx ? Object.assign({}, ctx, { strict: speaking, said: text }) : undefined);
-      if (!alive(id)) return null;
-      if (!r) { if (speaking) { await sleep(300); continue; } if (extra++ < 1 && Date.now() - tEnd < 4000) continue; ui.status('idle'); return null; }
-      const echo = speaking && r.src === 'voice' && r.alts.every(a => L.deNorm(a).split(/\s+/).filter(Boolean).every(w => spoken.has(w)));
-      if (echo) continue;
-      TTS.cancel(); ui.status('idle'); ui.heard(r.alts[0] || ''); return r;
+  function renderStep() {
+    S.locked = false; $('#fbar').className = 'fbar'; $('#lBar').style.width = (S.i / S.steps.length * 100) + '%';
+    if (S.i >= S.steps.length) return finishLearn();
+    const st = S.cur = S.steps[S.i], ex = $('#ex'); ex.innerHTML = '';
+    const head = t => ex.appendChild(el('div', 'task', t));
+    const card = (it, o = {}) => { const c = el('div', 'qcard', (o.noPic ? '' : `<div class="ico">${Ic.svg(it.icon)}</div>`) + `<div class="qword">${esc(o.word)}</div>` + (o.sub ? `<div class="qsub">${esc(o.sub)}</div>` : '')); if (o.speak) { const b = el('button', 'spk', '🔊 Anhören'); b.onclick = () => sayLa(it); c.appendChild(b); } ex.appendChild(c); return c; };
+    const options = (opts, cls) => { const box = el('div', 'opts ' + (cls || '')); opts.forEach(o => { const b = el('button', 'opt', o.html || esc(o.text)); b.dataset.ok = o.ok ? '1' : ''; b.onclick = () => { if (S.locked) return; if (st.type === 'mc_d2l' && !o.ok) sayLa(o.item); box.querySelectorAll('.opt').forEach(x => x.classList.add(x.dataset.ok ? 'ok' : x === b ? 'bad' : 'dim')); answer(o.ok, st.w); }; box.appendChild(b); }); ex.appendChild(box); };
+    const mk = dir => { let o = L.makeOptions(st.w, dir, S.pool); if (o.length < 3) o = L.makeOptions(st.w, dir, V); return o; };
+    if (st.type === 'intro') { head('Neues Wort'); card(st.w, { word: st.w.la, sub: st.w.de, speak: true }); sayLa(st.w); const b = el('button', 'btn', 'Weiter'); b.onclick = () => { S.i++; renderStep(); }; ex.appendChild(b); }
+    else if (st.type === 'mc_l2d') { head('Was heißt das auf Deutsch?'); card(st.w, { word: st.w.la, speak: true }); sayLa(st.w); options(mk('l2d')); }
+    else if (st.type === 'mc_d2l') { head('Wie heißt das auf Latein?'); card(st.w, { word: L.shortDe(st.w, 2) }); options(mk('d2l')); }
+    else if (st.type === 'listen') { head('Was hörst du?'); const b = el('button', 'spk big', '🔊'); b.onclick = () => sayLa(st.w); ex.appendChild(b); sayLa(st.w); options(mk('l2d')); }
+    else if (st.type === 'pic') { head('Welches Bild passt?'); card(st.w, { word: st.w.la, speak: true, noPic: true }); sayLa(st.w); const others = L.shuffle(S.pool.filter(o => o.id !== st.w.id && picOk(o) && o.icon !== st.w.icon)).filter((o, i, a) => a.findIndex(x => x.icon === o.icon) === i).slice(0, 2); options(L.shuffle([{ item: st.w, ok: true }].concat(others.map(o => ({ item: o, ok: false })))).map(o => Object.assign(o, { html: Ic.svg(o.item.icon) })), 'pics'); }
+    else if (st.type === 'pairs') renderPairs(st, ex, head);
+    else if (st.type === 'build') renderBuild(st, ex, head, card);
+  }
+  function renderPairs(st, ex, head) {
+    head('Finde die Paare'); const box = el('div', 'opts pairs'); let sel = null, left = st.ws.length, miss = false;
+    const A = L.shuffle(st.ws).map(w => ({ w, side: 'la', text: laFirst(w) })), B = L.shuffle(st.ws).map(w => ({ w, side: 'de', text: L.shortDe(w, 1) }));
+    A.forEach((a, i) => [a, B[i]].forEach(c => { const b = el('button', 'opt', esc(c.text)); b.dataset.id = c.w.id; b.dataset.side = c.side; b.onclick = () => {
+      if (b.classList.contains('ok') || S.locked) return; if (c.side === 'la') sayLa(c.w);
+      if (!sel || sel.c.side === c.side) { if (sel) sel.b.classList.remove('sel'); sel = { b, c }; b.classList.add('sel'); return; }
+      const o = sel; sel = null; o.b.classList.remove('sel');
+      if (o.c.w.id === c.w.id) { [b, o.b].forEach(x => x.classList.add('ok')); sfx.ok(); if (--left === 0) { S.locked = true; setTimeout(() => { S.i++; renderStep(); }, 600); } }
+      else { miss = true; S.wrong.add(c.w.id); S.wrong.add(o.c.w.id); [b, o.b].forEach(x => x.classList.add('bad')); sfx.bad(); setTimeout(() => [b, o.b].forEach(x => x.classList.remove('bad')), 500); }
+    }; box.appendChild(b); })); ex.appendChild(box);
+  }
+  function renderBuild(st, ex, head, card) {
+    head('Setze das lateinische Wort zusammen'); card(st.w, { word: L.shortDe(st.w, 2) });
+    const target = laFirst(st.w), slots = el('div', 'slots'), tiles = el('div', 'tiles'); let cur = [];
+    const check = () => { if (cur.length < [...target].length) return; const ok = cur.map(x => x.ch).join('') === target; S.locked = true; answer(ok, st.w); };
+    L.shuffle([...target].map(ch => ({ ch }))).forEach(t => { const b = el('button', 'tile', esc(t.ch)); t.b = b; b.onclick = () => { if (S.locked) return; b.classList.add('used'); const s = el('button', 'tile', esc(t.ch)); t.s = s; cur.push(t); s.onclick = () => { if (S.locked) return; cur = cur.filter(x => x !== t); s.remove(); b.classList.remove('used'); }; slots.appendChild(s); check(); }; tiles.appendChild(b); });
+    ex.appendChild(slots); ex.appendChild(tiles);
+  }
+  function answer(ok, w) {
+    S.locked = true; const fb = $('#fbar'), pair = `${w.la} = ${L.deVariantsRaw(w.de).slice(0, 2).join(', ')}`;
+    if (ok) { sfx.ok(); fb.className = 'fbar ok'; $('#fbT').textContent = pick(['Super!', 'Richtig!', 'Genau!', 'Sehr gut!', 'Stark!']); }
+    else { sfx.bad(); fb.className = 'fbar bad'; $('#fbT').textContent = 'Nicht ganz'; S.wrong.add(w.id); if (!S.retried.has(w.id)) { S.retried.add(w.id); S.steps.push({ type: 'mc_l2d', w }); } setTimeout(() => sayLa(w), 500); }
+    $('#fbS').textContent = pair; fb.scrollIntoView({ block: 'end' });
+  }
+  $('#fbNext').onclick = () => { S.i++; renderStep(); };
+  $('#lClose').onclick = () => { Gem.stopAudio(); renderHome(); };
+  function finishLearn() {
+    const n = S.words.length, good = S.words.filter(w => !S.wrong.has(w.id)).length;
+    S.words.forEach(w => grade(w.id, !S.wrong.has(w.id))); const xp = n * 5 + good * 5; P.xp += xp; touchStreak(); save();
+    endScreen(good, n, `+${xp} ⭐ · Serie: ${P.streak} ${P.streak === 1 ? 'Tag' : 'Tage'}`);
+  }
+  function endScreen(good, n, sub) { const r = n ? good / n : 0; $('#eStars').textContent = r >= .9 ? '⭐⭐⭐' : r >= .6 ? '⭐⭐' : '⭐'; $('#eMain').textContent = `${good} von ${n} gleich richtig`; $('#eSub').textContent = sub; show('end'); tone([523, 659, 784, 1047], .14); }
+  $('#eHome').onclick = renderHome;
+
+  /* =====================================================================
+     SPRECH-TRAINING (Gemini Live)
+     ===================================================================== */
+  const SYSTEM = `Du bist Lena, eine freundliche, geduldige Lernhelferin. Du übst mit einem Kind (5. Klasse Gymnasium) lateinische Vokabeln im Gespräch.
+
+SPRACHE
+- Sprich immer Deutsch. ANTWORTE UNMISSVERSTÄNDLICH AUF DEUTSCH.
+- Lateinische Wörter sprichst du in deutscher Schulaussprache: c immer wie k, v wie deutsches w, qu wie kw, Vokale mit Strich (ā ē ī ō ū) lang, Betonung nach der lateinischen Regel.
+- Fasse dich sehr kurz: höchstens ein kurzer Satz. Keine Erklärungen, kein Smalltalk.
+
+ABLAUF
+1. Zu Beginn sagst du nur: "Hallo! Welche Lektionen möchtest du lernen?"
+2. Sobald das Kind Lektionen nennt, rufst du lektionen_waehlen auf. Frage nicht nach, ob das stimmt.
+3. Danach tust du immer genau das, was in der Werkzeug-Antwort unter "anweisung" steht.
+4. In der Abfrage bekommst du immer genau eine Frage. Du sprichst nur das, was unter "sage" steht, und wartest dann still auf die Antwort des Kindes.
+5. Nach JEDER Äußerung des Kindes in der Abfrage rufst du antwort_melden auf. Erst die Werkzeug-Antwort sagt dir, was du als Nächstes sagst.
+
+BEWERTUNG für antwort_melden
+- "richtig": Das Kind hat eine der "richtige_antworten" gesagt, auch in einem ganzen Satz. Artikel dürfen fehlen. Bei lateinischen Antworten sind kleine Ausspracheunterschiede eines Kindes in Ordnung.
+- "falsch": Das Kind hat etwas anderes geantwortet.
+- "tipp": Das Kind möchte einen Tipp oder Hilfe.
+- "weiss_nicht": Das Kind weiß es nicht oder möchte die Lösung hören.
+- "nochmal": Das Kind möchte das Wort noch einmal hören.
+- "stopp": Das Kind möchte aufhören.
+Wenn du nichts Verständliches hörst, rufst du nichts auf und wartest.
+
+VERBOTEN
+- Verrate nie selbst die Lösung. Du sagst sie nur, wenn die Werkzeug-Antwort es aufträgt.
+- Denke dir nie selbst Vokabeln oder Fragen aus.`;
+  const TOOLS = [{ functionDeclarations: [
+    { name: 'lektionen_waehlen', behavior: 'BLOCKING', description: 'Aufrufen, sobald das Kind gesagt hat, welche Lektionen es lernen möchte.', parameters: { type: 'OBJECT', properties: { lektionen: { type: 'ARRAY', items: { type: 'INTEGER' }, description: 'Alle gewünschten Lektionsnummern von 1 bis 20. Beispiele: "eins bis vier" = [1,2,3,4]; "alles bis sieben" = [1,2,3,4,5,6,7]; "drei und fünf" = [3,5]; "alle" = 1 bis 20.' } }, required: ['lektionen'] } },
+    { name: 'reihenfolge_waehlen', behavior: 'BLOCKING', description: 'Aufrufen, sobald das Kind gesagt hat, ob die Lektionen nacheinander oder gemischt abgefragt werden sollen.', parameters: { type: 'OBJECT', properties: { reihenfolge: { type: 'STRING', enum: ['nacheinander', 'gemischt'] } }, required: ['reihenfolge'] } },
+    { name: 'antwort_melden', behavior: 'BLOCKING', description: 'In der Abfrage nach JEDER Äußerung des Kindes aufrufen.', parameters: { type: 'OBJECT', properties: { art: { type: 'STRING', enum: ['richtig', 'falsch', 'tipp', 'weiss_nicht', 'nochmal', 'stopp'] }, gehoert: { type: 'STRING', description: 'Was das Kind gesagt hat.' } }, required: ['art', 'gehoert'] } }] }];
+
+  const T = { live: null, active: false };
+  const tui = { state(t) { $('#tState').textContent = t; }, orb(c) { $('#orb').className = 'orb ' + c; $('#orb').textContent = c === 'speak' ? '🔊' : '🎤'; $('#orb').style.transform = ''; }, notice(t) { const n = $('#tNotice'); n.textContent = t || ''; n.style.display = t ? 'block' : 'none'; },
+    prog() { $('#tBar').style.width = (T.total ? T.done / T.total * 100 : 0) + '%'; $('#tCnt').textContent = T.total ? T.done + '/' + T.total : ''; } };
+  const sayText = it => Gem.laText(L.latForms(it.la)[0]);
+  const question = () => { const it = T.cur, d = T.dir; return { nummer: T.done + 1, von: T.total, richtung: d === 'l2d' ? 'Latein → Deutsch' : 'Deutsch → Latein', sage: d === 'l2d' ? sayText(it) : (it.q || L.shortDe(it, 2)), richtige_antworten: d === 'l2d' ? L.deVariantsRaw(it.de).concat(it.alt || []) : L.latAccepted(it, V) }; };
+  function tNext(pre) {
+    $('#tHint').textContent = ''; $('#tPic').innerHTML = '';
+    if (!T.queue.length) { T.ending = true; T.cur = null; $('#tPrompt').textContent = ''; tui.prog(); return { anweisung: `${pre} Sage dann: "Geschafft! Du hast ${T.total} Wörter geübt und ${T.first} davon gleich beim ersten Mal gewusst." Verabschiede dich kurz.`, ende: true }; }
+    const it = T.cur = T.queue.shift(); T.dir = L.nextDir(P.memo, it.id); save(); T.hints = 0; T.wrong = 0;
+    let p = pre; if (T.order === 'seq' && T.lessons.length > 1 && it.lesson !== T.lastLesson) p += ` Sage dann: "Lektion ${it.lesson}."`; T.lastLesson = it.lesson;
+    const q = question(); $('#tPrompt').textContent = T.dir === 'l2d' ? it.la : q.sage; tui.prog();
+    return { anweisung: `${p} Sage dann nur das Wort unter "sage" und warte auf die Antwort.`, frage: q };
+  }
+  function tReveal() {
+    const it = T.cur; T.tried.add(it.id); T.missed.add(it.id); grade(it.id, false); save();
+    T.reveals[it.id] = (T.reveals[it.id] || 0) + 1; if (T.reveals[it.id] < 2) L.requeue(T.queue, it); else T.done++;
+    const de = L.deVariantsRaw(it.de).slice(0, 2).join(', ');
+    const r = tNext(`Sage genau zweimal hintereinander: "${sayText(it)} – ${de}."`);
+    $('#tPic').innerHTML = Ic.svg(it.icon); $('#tHint').textContent = `${it.la} = ${de}`; return r;
+  }
+  function tBegin(order, pre) { T.order = order; const items = V.filter(v => T.lessons.includes(v.lesson)); T.queue = L.buildQueue(items, order); T.total = items.length; T.done = 0; T.first = 0; T.lastLesson = T.lessons.length > 1 ? null : T.lessons[0]; return tNext(pre); }
+  function onTool(name, a) {
+    if (name === 'lektionen_waehlen') {
+      const ls = [...new Set((a.lektionen || []).map(Number).filter(n => LESSONS.includes(n)))].sort((x, y) => x - y);
+      if (!ls.length) return { anweisung: 'Sage, dass es die Lektionen 1 bis 20 gibt, und frage noch einmal, welche das Kind lernen möchte.' };
+      T.lessons = ls; const d = L.describeLessons(ls); $('#tPrompt').textContent = d;
+      return ls.length === 1 ? tBegin('seq', `Sage: "${d}. Los geht's!"`) : { anweisung: `Sage: "${d}. Nacheinander oder gemischt?" Rufe nach der Antwort des Kindes reihenfolge_waehlen auf.` };
     }
-    return null;
-  }
-  const firstParse = (alts, fn) => { for (const a of alts) { const v = fn(a); if (v) return v; } return null; };
-
-  async function startVoice() {
-    show('voice'); Sp.active = true; const id = ++Sp.run;
-    $('#sBar').style.width = '0'; $('#sCnt').textContent = ''; ui.prompt(''); ui.hint(''); ui.pic(null); ui.heard(''); ui.cap(''); ui.buttons(false); notice('');
-    if (!SR) notice('Dieses Gerät kann im Browser nicht zuhören. Bitte in Chrome auf Android öffnen. Du kannst hier unten eintippen.');
-    try { Sp.wake = await navigator.wakeLock.request('screen'); } catch (e) { }
-    Bus.gate = true; Bus.early = null;
-    try {
-      const setup = await setupDialog(id); if (!alive(id) || !setup) return;
-      await quiz(id, setup.items, setup.order);
-    } finally { LLM.closeMic(); if (Sp.run === id) { Bus.gate = false; try { Sp.wake && Sp.wake.release(); } catch (e) { } } }
-  }
-  function stopVoice() { LLM.closeMic(); Sp.active = false; Sp.run++; Bus.gate = false; Bus.pending = null; Bus.early = null; TTS.cancel(); STT.abort(); try { Sp.wake && Sp.wake.release(); } catch (e) { } }
-
-  async function setupDialog(id) {
-    Bus.gate = true; Bus.early = null;
-    const LC = { kind: 'lessons', max: LESSONS.length };
-    let lessons = null, misses = 0, r = await sayListen(id, 'Hallo! Welche Lektionen möchtest du lernen?', 9000, LC);
-    while (alive(id) && !lessons) {
-      if (!alive(id)) return null;
-      if (!r) { misses++; r = await sayListen(id, misses < 2 ? 'Welche Lektionen möchtest du lernen?' : 'Welche Lektionen? Du kannst die Zahlen auch unten eintippen.', 9000, LC); continue; }
-      if ((r.llm && r.llm.stop) || L.parseCommand(r.alts.join(' ')) === 'stop') return null;
-      lessons = (r.llm && r.llm.lessons) || firstParse(r.alts, t => L.parseLessons(t));
-      if (!lessons) r = await sayListen(id, 'Das habe ich nicht verstanden. Welche Lektionen möchtest du lernen?', 9000, LC);
-    }
-    if (!alive(id) || !lessons) return null;
-    const desc = L.describeLessons(lessons);
-    ui.prompt(desc);
-    let order = 'seq';
-    if (lessons.length > 1) {
-      await say(id, `${desc}. Nacheinander oder gemischt?`);
-      order = null; misses = 0;
-      while (alive(id) && !order) {
-        const o = await listenFor(id, 9000, { kind: 'order' });
-        if (!alive(id)) return null;
-        if (!o) { misses++; await say(id, misses < 2 ? 'Nacheinander oder gemischt?' : 'Nacheinander oder gemischt? Du kannst auch unten eintippen.'); continue; }
-        if ((o.llm && o.llm.stop) || L.parseCommand(o.alts.join(' ')) === 'stop') return null;
-        order = (o.llm && o.llm.order) || firstParse(o.alts, t => L.parseOrder(t));
-        if (!order) await say(id, 'Das habe ich nicht verstanden. Nacheinander oder gemischt?');
-      }
-    } else await say(id, `${desc}.`);
-    if (!alive(id)) return null;
-    const items = V.filter(v => lessons.includes(v.lesson));
-    ui.prompt('');
-    await say(id, "Los geht's!");
-    return { items, order };
-  }
-
-  async function quiz(id, items, order) {
-    Sp.lastItems = items; Sp.items = items; Sp.order = order; LLM.poolText = [...new Set(items.map(i => L.latForms(i.la)[0]))].slice(0, 160).join(', '); Bus.gate = true;
-    const queue = L.buildQueue(items, order), total = items.length; let done = 0, first = 0; const missed = new Set(); const tried = new Set(); let lastLesson = null, userStop = false;
-    ui.buttons(true);
-    while (queue.length && alive(id)) {
-      $('#sBar').style.width = (done / total * 100) + '%'; $('#sCnt').textContent = done + '/' + total;
-      const item = queue.shift();
-      if (order === 'seq' && item.lesson !== lastLesson) { lastLesson = item.lesson; ui.prompt(''); await say(id, 'Lektion ' + item.lesson + '.'); if (!alive(id)) break; }
-      const dir = L.nextDir(memo, item.id); saveMemo();
-      const res = await askWord(id, item, dir);
-      if (res === 'stop') { userStop = alive(id); break; }
-      if (!alive(id)) break;
-      if (res === 'first') { if (!tried.has(item.id)) first++; done++; }
-      else if (res === 'later') { tried.add(item.id); missed.add(item.id); done++; }
-      else { tried.add(item.id); missed.add(item.id); L.requeue(queue, item); }
-    }
-    ui.buttons(false); Bus.gate = false;
-    if (alive(id) || userStop) {
-      $('#sBar').style.width = (done / total * 100) + '%'; $('#sCnt').textContent = done + '/' + total;
-      const msg = userStop ? 'Okay, wir machen Schluss. Das war schon gut!' : `Geschafft! Du hast ${total} Wörter geübt. ${first} davon hast du gleich beim ersten Mal gewusst.${missed.size ? ' Die anderen üben wir bald wieder.' : ' Wow, alles auf Anhieb!'}`;
-      Sp.active = false; Sp.missed = items.filter(i => missed.has(i.id));
-      endScreenData('voice', userStop ? done : total, first, Sp.missed);
-      await TTS.speak(msg, .95);
-    }
-  }
-
-  async function askWord(id, item, dir) {
-    Sp.cur = { item, dir };
-    ui.pic(null); ui.hint(''); ui.heard('');
-    ui.prompt(dir === 'l2d' ? item.la : L.shortDe(item, 2));
-    ui.cap(dir === 'l2d' ? 'Was heißt das auf Deutsch?' : 'Wie heißt das auf Latein?');
-    Bus.gate = true; Bus.early = null;
-    const sayQ = () => dir === 'l2d' ? sayLa(item, .8) : TTS.speak(L.deSpeak(item), .95);
-    ui.status('speaking'); await sayQ(); ui.status('idle');
-    let attempts = 0, hints = 0, silent = 0;
-    for (; ;) {
-      if (!alive(id)) return 'stop';
-      const r = await listenFor(id, 9000, { kind: 'answer', dir, prompt: dir === 'l2d' ? item.la : L.shortDe(item, 2), accepted: dir === 'l2d' ? L.deVariantsRaw(item.de).slice(0, 8) : L.latAccepted(item, V).slice(0, 6) });
-      if (!alive(id)) return 'stop';
-      if (!r) { silent++; if (silent === 2) await say(id, 'Ich habe nichts gehört. Sag die Übersetzung, oder sag Tipp.'); if (silent >= 5) { await pauseWait(id); silent = 0; } continue; }
-      silent = 0;
-      const alts = r.alts, llm = r.llm;
-      const cmds = llm ? (['hint', 'repeat', 'giveup', 'stop'].includes(llm.intent) ? [llm.intent] : []) : alts.map(L.parseCommand).filter(Boolean);
-      if (cmds.includes('stop')) return 'stop';
-      const strict = dir === 'l2d' ? L.matchGerman(alts, item) : L.matchLatin(alts, item, V);
-      const correct = llm ? (llm.intent === 'answer' && (llm.correct || strict)) : (dir === 'l2d' ? strict : L.matchLatin(alts, item, V, Sp.items));
-      if (cmds.includes('giveup') && !correct) { await reveal(id, item); return 'wrong'; }
-      if (correct) {
-        Bus.gate = false; ui.pic(item); ui.hint('');
-        ui.cap(`${item.la} = ${L.deVariantsRaw(item.de).slice(0, 2).join(', ')}`); sfx.ok();
-        await TTS.speak(pick(PRAISE) + (dir === 'd2l' ? ' ' + L.pron(item.la) + '.' : ''), .95); await sleep(250);
-        return attempts || hints ? 'later' : 'first';
-      }
-      if (cmds.includes('hint')) { hints++; const h = L.hint(item, dir, hints); ui.hint(h.shown); await say(id, h.said); continue; }
-      if (cmds.includes('repeat')) { ui.status('speaking'); await sayQ(); ui.status('idle'); continue; }
-      attempts++; sfx.bad();
-      if (attempts >= 3) { await reveal(id, item); return 'wrong'; }
-      await say(id, pick(WRONG));
+    if (name === 'reihenfolge_waehlen') { if (!T.lessons) return { anweisung: 'Frage zuerst, welche Lektionen das Kind lernen möchte.' }; if (T.cur) return { anweisung: 'Wiederhole die aktuelle Frage.', frage: question() }; return tBegin(a.reihenfolge === 'gemischt' ? 'mix' : 'seq', 'Sage: "Los geht\'s!"'); }
+    if (T.ending) return { anweisung: 'Verabschiede dich kurz.', ende: true };
+    if (!T.cur) return { anweisung: 'Frage, welche Lektionen das Kind lernen möchte, und rufe dann lektionen_waehlen auf.' };
+    const it = T.cur;
+    switch (a.art) {
+      case 'richtig': if (!T.tried.has(it.id)) { T.first++; grade(it.id, true); P.xp += 2; } T.done++; save(); sfx.ok(); return tNext('Lobe mit ein bis zwei Wörtern.');
+      case 'falsch': T.tried.add(it.id); T.wrong++; sfx.bad(); if (T.wrong >= 3) return tReveal(); return { anweisung: 'Sage kurz, dass das nicht stimmt und das Kind es noch einmal versuchen soll. Verrate die Lösung nicht. Warte dann auf die Antwort.' };
+      case 'tipp': { T.tried.add(it.id); T.hints++; const h = L.hint(it, T.dir, T.hints); $('#tHint').textContent = h.shown; return { anweisung: `Sage genau: "${h.said}" Warte dann auf die Antwort. Wiederhole die Frage nicht.` }; }
+      case 'weiss_nicht': return tReveal();
+      case 'nochmal': return { anweisung: 'Sage noch einmal nur das Wort unter "sage" und warte auf die Antwort.', frage: question() };
+      default: T.ending = true; return { anweisung: 'Verabschiede dich mit einem kurzen Satz.', ende: true };
     }
   }
-  async function reveal(id, item) {
-    Bus.gate = false; ui.pic(item); ui.hint('');
-    ui.prompt(item.la); ui.cap(`${item.la} = ${L.deVariantsRaw(item.de).slice(0, 2).join(', ')}`);
-    ui.status('speaking');
-    await TTS.speak('Das merken wir uns.', .95);
-    for (let i = 0; i < 2; i++) { if (!alive(id)) return; await sayLa(item, .8); await sleep(150); await sayDe(item); await sleep(350); }
-    ui.status('idle');
+  async function startTalk(pre) {
+    show('talk'); tui.notice(''); $('#tPrompt').textContent = ''; $('#tHint').textContent = ''; $('#tPic').innerHTML = ''; $('#tCap').textContent = '';
+    Object.assign(T, { active: true, lessons: null, cur: null, queue: [], total: 0, done: 0, first: 0, tried: new Set(), missed: new Set(), reveals: {}, ending: false, retries: 0, pre }); tui.prog();
+    if (!Gem.hasKey()) { tui.orb(''); tui.state(''); tui.notice('Für das Sprech-Training fehlt noch der Gemini-Schlüssel. Bitte im Elternbereich (⚙️) eintragen.'); return; }
+    Gem.ctx(); try { T.wake = await navigator.wakeLock.request('screen'); } catch (e) { }
+    connect();
   }
-  function pauseWait(id) {
-    return new Promise(res => { ui.status('paused'); $('#pause').classList.add('on'); Sp.paused = () => { $('#pause').classList.remove('on'); Sp.paused = null; res(); }; });
+  function connect() {
+    tui.orb('wait'); tui.state('Verbinde …');
+    const live = T.live = Gem.live({ system: SYSTEM, tools: TOOLS, onTool,
+      onReady: async () => { if (T.live !== live) return; try { await live.startMic(); } catch (e) { tui.orb(''); tui.state(''); tui.notice('Das Mikrofon ist nicht erlaubt. Bitte im Browser beim Schloss-Symbol das Mikrofon erlauben.'); T.active = false; live.close(); return; }
+        T.retries = 0; tui.orb('listen'); tui.state('Ich höre zu …');
+        live.text(T.cur ? '(Die Verbindung war kurz unterbrochen. Rufe jetzt antwort_melden mit art "nochmal" auf.)' : T.pre ? `(Das Gespräch beginnt. Das Kind hat Lektion ${T.pre[0]} schon ausgewählt. Rufe jetzt lektionen_waehlen mit [${T.pre[0]}] auf und frage nichts.)` : '(Das Gespräch beginnt jetzt.)'); },
+      onSpeak: on => { if (T.live !== live) return; tui.orb(on ? 'speak' : 'listen'); tui.state(on ? 'Lena spricht …' : 'Ich höre zu …'); },
+      onLevel: v => { if (!live.speaking) $('#orb').style.transform = `scale(${1 + Math.min(.25, v * 4)})`; },
+      onCaption: t => { $('#tCap').textContent = t; },
+      onTurn: () => { if (T.live === live && T.ending) finishTalk(); },
+      onClose: (code, reason) => { if (T.live !== live || !T.active) return; if (T.ending) return finishTalk(); if (T.retries++ < 3) { tui.state('Verbinde neu …'); setTimeout(() => { if (T.active && T.live === live) connect(); }, 800); } else { tui.orb(''); tui.state(''); tui.notice('Die Verbindung zu Gemini klappt gerade nicht' + (reason ? ' (' + reason.slice(0, 140) + ')' : '') + '. Bitte später noch einmal versuchen.'); } } });
   }
-  $('#resume').onclick = () => { if (Sp.paused) Sp.paused(); };
+  function stopTalk() { T.active = false; const l = T.live; T.live = null; if (l) l.close(); Gem.stopAudio(); try { T.wake && T.wake.release(); } catch (e) { } }
+  function finishTalk() { const had = T.total > 0; const good = T.first, n = T.done; stopTalk(); if (!had) return renderHome(); touchStreak(); save(); endScreen(good, n, T.missed.size ? `${T.missed.size} Wörter üben wir bald wieder.` : 'Alles auf Anhieb gewusst!'); }
+  $('#tClose').onclick = () => { const had = T.done > 0; if (had) finishTalk(); else { stopTalk(); renderHome(); } };
+  const sayAs = t => { if (T.live && T.cur) { Gem.stopAudio(); T.live.text(t); } };
+  $('#bHint').onclick = () => sayAs('Gib mir einen Tipp.'); $('#bRepeat').onclick = () => sayAs('Sag das Wort bitte nochmal.'); $('#bGive').onclick = () => sayAs('Das weiß ich nicht.');
+  document.addEventListener('visibilitychange', () => { if (document.hidden && T.active) { const had = T.done > 0; if (had) finishTalk(); else { stopTalk(); renderHome(); } } });
 
-  // Knöpfe + Tippen
-  $('#bHint').onclick = () => Bus.push('tipp'); $('#bGive').onclick = () => Bus.push('weiß ich nicht'); $('#bRepeat').onclick = () => Bus.push('nochmal');
-  $('#typeForm').onsubmit = e => { e.preventDefault(); const v = $('#typeIn').value.trim(); if (!v) return; $('#typeIn').value = ''; ui.heard(v); Bus.push(v, 'type'); };
-  $('#sClose').onclick = () => { stopVoice(); show('home'); };
+  /* =====================================================================
+     ELTERNBEREICH
+     ===================================================================== */
+  async function clipInfo() { const have = await Gem.haveIds(); $('#sClips').textContent = `${have.size} von ${V.length} Wörtern sind mit dieser Stimme vertont. Fehlende Wörter spricht solange die Browser-Stimme.`; }
+  function openSettings() { $('#sKey').value = Gem.key; const sv = $('#sVoice'); sv.innerHTML = ''; Gem.VOICES.forEach(([v, t]) => { const o = el('option', '', t); o.value = v; o.selected = v === Gem.voice; sv.appendChild(o); }); $('#sMsg').textContent = ''; clipInfo(); show('settings'); }
+  const sMsg = (t, bad) => { $('#sMsg').textContent = t; $('#sMsg').style.color = bad ? 'var(--bad)' : 'var(--ok2)'; };
+  $('#sBack').onclick = () => { Gem.setKey($('#sKey').value); renderHome(); };
+  $('#sKey').onchange = () => Gem.setKey($('#sKey').value);
+  $('#sVoice').onchange = () => { Gem.setVoice($('#sVoice').value); clipInfo(); };
+  $('#sTest').onclick = async () => { Gem.setKey($('#sKey').value); if (!Gem.key) return sMsg('Bitte zuerst den Schlüssel eintragen.', true); sMsg('Teste …'); try { await Gem.test(); sMsg('Funktioniert!'); } catch (e) { sMsg('Fehler ' + e.message.slice(0, 120), true); } };
+  $('#sProbe').onclick = async () => { Gem.setKey($('#sKey').value); if (!Gem.key) return sMsg('Bitte zuerst den Schlüssel eintragen.', true); sMsg('Lade Probe …'); try { Gem.ctx(); const pcm = await Gem.tts(['puella', 'vīkus', 'dolēre', 'agrikola'].join(' <long pause> '), Gem.STYLE); Gem.stopAudio(); Gem.queue(pcm); sMsg('puella, vīcus, dolēre, agricola'); } catch (e) { sMsg('Fehler ' + e.message.slice(0, 120), true); } };
+  $('#sLoad').onclick = async () => { Gem.setKey($('#sKey').value); if (!Gem.key) return sMsg('Bitte zuerst den Schlüssel eintragen.', true); const b = $('#sLoad'); b.disabled = true; try { for (const n of LESSONS) { b.textContent = `Lade Lektion ${n} von ${LESSONS.length} …`; await preload(n); await clipInfo(); if (Gem.lastError) { sMsg('Fehler ' + Gem.lastError.slice(0, 120), true); Gem.lastError = ''; break; } } } finally { b.disabled = false; b.textContent = 'Alle Aufnahmen laden'; clipInfo(); } };
+  $('#sReset').onclick = () => { if (confirm('Wirklich den gesamten Lernfortschritt löschen?')) { P = { w: {}, xp: 0, streak: 0, memo: {} }; save(); renderHome(); } };
 
-  /* ---------- Ende ---------- */
-  let lastRun = null;
-  function endScreenData(kind, total, first, missedItems) {
-    lastRun = { kind, total, first, missed: missedItems, items: kind === 'voice' ? Sp.lastItems : Vis.items, order: kind === 'voice' ? Sp.order : Vis.order };
-    const pct = total ? first / total : 0;
-    $('#eStars').textContent = pct >= .9 ? '⭐⭐⭐' : pct >= .6 ? '⭐⭐' : '⭐';
-    $('#eMain').textContent = `${first} von ${total} gleich richtig`;
-    $('#eSub').textContent = missedItems.length ? `${missedItems.length} Wörter üben wir noch.` : 'Alles auf Anhieb – klasse!';
-    $('#eMiss').style.display = missedItems.length ? 'block' : 'none';
-    show('end');
-  }
-  function endScreen(kind) { endScreenData(kind, Vis.total, Vis.first, Vis.items.filter(i => Vis.missed.has(i.id))); }
-  $('#eAgain').onclick = () => { if (!lastRun) return show('home'); if (lastRun.kind === 'visual') startVisual(lastRun.items, lastRun.order); else startVoice(); };
-  $('#eMiss').onclick = () => { if (!lastRun) return; if (lastRun.kind === 'visual') startVisual(lastRun.missed, 'mix'); else startVoiceWith(lastRun.missed); };
-  async function startVoiceWith(items) {
-    show('voice'); Sp.active = true; const id = ++Sp.run; ui.prompt(''); ui.hint(''); ui.pic(null); ui.heard(''); ui.cap(''); Bus.gate = true;
-    try { await say(id, 'Los geht\'s! Wir üben die Wörter, die noch nicht so gut geklappt haben.'); if (alive(id)) await quiz(id, items, 'mix'); } finally { if (Sp.run === id) Bus.gate = false; }
-  }
-  $$('[data-home]').forEach(b => b.onclick = () => { stopVoice(); TTS.cancel(); show('home'); });
-
-  /* ---------- Start ---------- */
-  $('#goVoice').onclick = () => { TTS.speak(''); startVoice(); };
-  $('#goVisual').onclick = () => { buildChips(); show('vsetup'); };
-  /* KI-Einstellungen */
-  (function () {
-    const on = $('#llmOn'), key = $('#llmKey'), model = $('#llmModel'), msg = $('#llmMsg');
-    on.checked = LLM.on; key.value = LLM.key; model.value = LLM.model;
-    const say = (t, bad) => { msg.textContent = t; msg.style.color = bad ? 'var(--bad)' : 'var(--ok)'; };
-    on.onchange = () => { LLM.setOn(on.checked); if (on.checked && !LLM.key) say('Bitte zuerst den Schlüssel eintragen.', true); else say(on.checked ? 'KI-Erkennung ist an.' : 'Normale Spracherkennung ist an.'); };
-    key.onchange = () => { LLM.setKey(key.value); LLM.failed = false; };
-    model.onchange = () => { LLM.setModel(model.value); model.value = LLM.model; LLM.failed = false; };
-    $('#llmTest').onclick = async () => { LLM.setKey(key.value); LLM.setModel(model.value); LLM.failed = false; if (!LLM.key) { say('Bitte zuerst den Schlüssel eintragen.', true); return; } say('Teste …'); try { await LLM.test(); say('Funktioniert! Die KI ist erreichbar.'); } catch (e) { say('Fehler: ' + (e.message || e), true); } };
-  })();
-  function fillVoices(de) { const sel = $('#voiceSel'); if (!sel) return; sel.innerHTML = ''; de.forEach(v => { const o = document.createElement('option'); o.value = v.name; o.textContent = v.name.replace(/^Microsoft |^Google /, m => m) + (/natural|neural|online/i.test(v.name) ? ' ★' : ''); if (TTS.voice && TTS.voice.name === v.name) o.selected = true; sel.appendChild(o); }); }
-  $('#voiceSel').addEventListener('change', e => { store.set('voiceName', e.target.value); TTS.voice = TTS.list().find(v => v.name === e.target.value) || TTS.voice; TTS.speak('Ich spreche so: wikus, amare, puella.', 1); });
-  $('#tempoSel').value = String(TTS.factor); if ($('#tempoSel').value !== String(TTS.factor)) $('#tempoSel').value = '1.16';
-  $('#tempoSel').addEventListener('change', e => { TTS.factor = parseFloat(e.target.value); store.set('tempo', TTS.factor); TTS.speak('Ich spreche jetzt so schnell.', .95); });
-  $('#footInfo').textContent = `${V.length} Wörter · Lektion ${LESSONS[0]}–${LESSONS[LESSONS.length - 1]}`;
-  if (!SR) $('#noSR').style.display = 'block';
-  TTS.load(); buildChips();
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => { });
-  window.__latein = { LLM, Bus, STT, TTS, Sp, startVoice, startVisual, memo, L, V };
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
+  window.__lt = { S, T, P: () => P, Gem, L, V, onTool, startLearn, startTalk, renderHome, grade, dueWords };
+  renderHome();
 })();
