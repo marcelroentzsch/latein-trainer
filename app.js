@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const VERSION = '2.0';
+  const VERSION = '2.1';
   const L = window.Logic, V = window.VOCAB, Ic = window.Icons, Gem = window.Gem;
   const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
   const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
@@ -32,7 +32,13 @@
   function browserSay(text) { try { const u = new SpeechSynthesisUtterance(text); u.lang = 'de-DE'; const v = speechSynthesis.getVoices().filter(x => /^de/i.test(x.lang)); const best = v.find(x => /natural|online/i.test(x.name)) || v.find(x => /google/i.test(x.name)) || v[0]; if (best) u.voice = best; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { } }
   const clipItems = items => items.map(i => ({ id: String(i.id), text: Gem.laText(L.latForms(i.la)[0]) }));
   const preload = lesson => Gem.loadLesson(lesson, clipItems(V.filter(v => v.lesson === lesson)));
-  async function sayLa(item) { let ok = false; try { ok = await Gem.playClip(String(item.id)); } catch (e) { } if (!ok) { browserSay(L.pron(item.la)); if (Gem.hasKey()) preload(item.lesson); } }
+  let sayTok = 0;
+  async function sayLa(item) {
+    const tok = ++sayTok, id = String(item.id); let ok = false;
+    try { ok = await Gem.playClip(id); } catch (e) { }
+    if (!ok && Gem.hasKey()) { try { await Promise.race([preload(item.lesson), sleep(9000)]); if (tok !== sayTok) return; ok = await Gem.playClip(id); } catch (e) { } }
+    if (!ok && tok === sayTok) browserSay(L.pron(item.la));
+  }
 
   /* =====================================================================
      START
@@ -71,7 +77,7 @@
   const picOk = it => !/^(txt|num):/.test(it.icon);
   function startLearn(lesson) {
     let words;
-    if (lesson == null) words = dueWords().slice(0, 8);
+    if (lesson == null) { words = dueWords().slice(0, 8); if (Gem.hasKey()) [...new Set(words.map(w => w.lesson))].forEach(preload); }
     else { const items = V.filter(v => v.lesson === lesson), now = Date.now(); const due = items.filter(v => W(v.id).b > 0 && W(v.id).due <= now).sort((a, b) => W(a.id).b - W(b.id).b); const fresh = items.filter(v => W(v.id).b === 0); words = due.slice(0, 6).concat(fresh).slice(0, 6); if (words.length < 6) words = words.concat(items.filter(v => !words.includes(v)).sort((a, b) => W(a.id).b - W(b.id).b)).slice(0, 6); if (Gem.hasKey()) preload(lesson); }
     const lessons = new Set(words.map(w => w.lesson)); S.pool = V.filter(v => lessons.has(v.lesson)); if (S.pool.length < 6) S.pool = V;
     const steps = [];
@@ -122,7 +128,7 @@
     $('#fbS').textContent = pair; fb.scrollIntoView({ block: 'end' });
   }
   $('#fbNext').onclick = () => { S.i++; renderStep(); };
-  $('#lClose').onclick = () => { Gem.stopAudio(); renderHome(); };
+  $('#lClose').onclick = () => { sayTok++; Gem.stopAudio(); renderHome(); };
   function finishLearn() {
     const n = S.words.length, good = S.words.filter(w => !S.wrong.has(w.id)).length;
     S.words.forEach(w => grade(w.id, !S.wrong.has(w.id))); const xp = n * 5 + good * 5; P.xp += xp; touchStreak(); save();
@@ -170,20 +176,24 @@ VERBOTEN
     prog() { $('#tBar').style.width = (T.total ? T.done / T.total * 100 : 0) + '%'; $('#tCnt').textContent = T.total ? T.done + '/' + T.total : ''; } };
   const sayText = it => Gem.laText(L.latForms(it.la)[0]);
   const question = () => { const it = T.cur, d = T.dir; return { nummer: T.done + 1, von: T.total, richtung: d === 'l2d' ? 'Latein → Deutsch' : 'Deutsch → Latein', sage: d === 'l2d' ? sayText(it) : (it.q || L.shortDe(it, 2)), richtige_antworten: d === 'l2d' ? L.deVariantsRaw(it.de).concat(it.alt || []) : L.latAccepted(it, V) }; };
-  function tNext(pre) {
-    $('#tHint').textContent = ''; $('#tPic').innerHTML = '';
+  function tShowSolved(it) { $('#tPrompt').textContent = it.la; $('#tHint').textContent = L.deVariantsRaw(it.de).slice(0, 2).join(', '); $('#tPic').innerHTML = Ic.svg(it.icon); }
+  function tApply() { clearTimeout(T.pendT); const f = T.pending; T.pending = null; if (f) f(); }
+  function tNext(pre, solved) {
+    clearTimeout(T.pendT); T.pending = null;
+    if (solved) tShowSolved(solved); else { $('#tHint').textContent = ''; $('#tPic').innerHTML = ''; }
     if (!T.queue.length) { T.ending = true; T.cur = null; $('#tPrompt').textContent = ''; tui.prog(); return { anweisung: `${pre} Sage dann: "Geschafft! Du hast ${T.total} Wörter geübt und ${T.first} davon gleich beim ersten Mal gewusst." Verabschiede dich kurz.`, ende: true }; }
     const it = T.cur = T.queue.shift(); T.dir = L.nextDir(P.memo, it.id); save(); T.hints = 0; T.wrong = 0;
     let p = pre; if (T.order === 'seq' && T.lessons.length > 1 && it.lesson !== T.lastLesson) p += ` Sage dann: "Lektion ${it.lesson}."`; T.lastLesson = it.lesson;
-    const q = question(); $('#tPrompt').textContent = T.dir === 'l2d' ? it.la : q.sage; tui.prog();
+    const q = question(), dir = T.dir; tui.prog();
+    const showNew = () => { $('#tHint').textContent = ''; $('#tPic').innerHTML = ''; $('#tPrompt').textContent = dir === 'l2d' ? it.la : q.sage; };
+    if (solved) { T.pending = showNew; T.pendT = setTimeout(tApply, 12000); } else showNew();
     return { anweisung: `${p} Sage dann nur das Wort unter "sage" und warte auf die Antwort.`, frage: q };
   }
   function tReveal() {
     const it = T.cur; T.tried.add(it.id); T.missed.add(it.id); grade(it.id, false); save();
     T.reveals[it.id] = (T.reveals[it.id] || 0) + 1; if (T.reveals[it.id] < 2) L.requeue(T.queue, it); else T.done++;
     const de = L.deVariantsRaw(it.de).slice(0, 2).join(', ');
-    const r = tNext(`Sage genau zweimal hintereinander: "${sayText(it)} – ${de}."`);
-    $('#tPic').innerHTML = Ic.svg(it.icon); $('#tHint').textContent = `${it.la} = ${de}`; return r;
+    return tNext(`Sage genau zweimal hintereinander: "${sayText(it)} – ${de}."`, it);
   }
   function tBegin(order, pre) { T.order = order; const items = V.filter(v => T.lessons.includes(v.lesson)); T.queue = L.buildQueue(items, order); T.total = items.length; T.done = 0; T.first = 0; T.lastLesson = T.lessons.length > 1 ? null : T.lessons[0]; return tNext(pre); }
   function onTool(name, a) {
@@ -198,7 +208,7 @@ VERBOTEN
     if (!T.cur) return { anweisung: 'Frage, welche Lektionen das Kind lernen möchte, und rufe dann lektionen_waehlen auf.' };
     const it = T.cur;
     switch (a.art) {
-      case 'richtig': if (!T.tried.has(it.id)) { T.first++; grade(it.id, true); P.xp += 2; } T.done++; save(); sfx.ok(); return tNext('Lobe mit ein bis zwei Wörtern.');
+      case 'richtig': if (!T.tried.has(it.id)) { T.first++; grade(it.id, true); P.xp += 2; } T.done++; save(); sfx.ok(); return tNext('Lobe mit ein bis zwei Wörtern.', it);
       case 'falsch': T.tried.add(it.id); T.wrong++; sfx.bad(); if (T.wrong >= 3) return tReveal(); return { anweisung: 'Sage kurz, dass das nicht stimmt und das Kind es noch einmal versuchen soll. Verrate die Lösung nicht. Warte dann auf die Antwort.' };
       case 'tipp': { T.tried.add(it.id); T.hints++; const h = L.hint(it, T.dir, T.hints); $('#tHint').textContent = h.shown; return { anweisung: `Sage genau: "${h.said}" Warte dann auf die Antwort. Wiederhole die Frage nicht.` }; }
       case 'weiss_nicht': return tReveal();
@@ -219,10 +229,10 @@ VERBOTEN
       onReady: async () => { if (T.live !== live) return; try { await live.startMic(); } catch (e) { tui.orb(''); tui.state(''); tui.notice('Das Mikrofon ist nicht erlaubt. Bitte im Browser beim Schloss-Symbol das Mikrofon erlauben.'); T.active = false; live.close(); return; }
         T.retries = 0; tui.orb('listen'); tui.state('Ich höre zu …');
         live.text(T.cur ? '(Die Verbindung war kurz unterbrochen. Rufe jetzt antwort_melden mit art "nochmal" auf.)' : T.pre ? `(Das Gespräch beginnt. Das Kind hat Lektion ${T.pre[0]} schon ausgewählt. Rufe jetzt lektionen_waehlen mit [${T.pre[0]}] auf und frage nichts.)` : '(Das Gespräch beginnt jetzt.)'); },
-      onSpeak: on => { if (T.live !== live) return; tui.orb(on ? 'speak' : 'listen'); tui.state(on ? 'Lena spricht …' : 'Ich höre zu …'); },
+      onSpeak: on => { if (T.live !== live) return; if (!on) tApply(); tui.orb(on ? 'speak' : 'listen'); tui.state(on ? 'Lena spricht …' : 'Ich höre zu …'); },
       onLevel: v => { if (!live.speaking) $('#orb').style.transform = `scale(${1 + Math.min(.25, v * 4)})`; },
       onCaption: t => { $('#tCap').textContent = t; },
-      onTurn: () => { if (T.live === live && T.ending) finishTalk(); },
+      onTurn: () => { if (T.live !== live) return; tApply(); if (T.ending) finishTalk(); },
       onClose: (code, reason) => { if (T.live !== live || !T.active) return; if (T.ending) return finishTalk(); if (T.retries++ < 3) { tui.state('Verbinde neu …'); setTimeout(() => { if (T.active && T.live === live) connect(); }, 800); } else { tui.orb(''); tui.state(''); tui.notice('Die Verbindung zu Gemini klappt gerade nicht' + (reason ? ' (' + reason.slice(0, 140) + ')' : '') + '. Bitte später noch einmal versuchen.'); } } });
   }
   function stopTalk() { T.active = false; const l = T.live; T.live = null; if (l) l.close(); Gem.stopAudio(); try { T.wake && T.wake.release(); } catch (e) { } }
