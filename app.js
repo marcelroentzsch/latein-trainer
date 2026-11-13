@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const VERSION = '2.3';
+  const VERSION = '2.4';
   const L = window.Logic, V = window.VOCAB, Ic = window.Icons, Gem = window.Gem;
   const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
   const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
@@ -38,6 +38,7 @@
   const ambiguous = it => !!it.q || keyCount[firstKey(it)] > 1;          // z. B. "in (+ Abl.)" / "in (+ Akk.)", "nōs (Nom.)" / "nōs (Akk.)"
   const deAsk = (it, n) => it.q || L.shortDe(it, n);
   const allTexts = [...new Set(V.map(sayText))];
+  const unspell = (() => { const m = new Map(); V.forEach(v => parts(v).forEach(p => { const k = Gem.laText(p); if (k !== p) m.set(k, p); })); const keys = [...m.keys()].sort((a, b) => b.length - a.length); if (!keys.length) return t => t; const re = new RegExp('(^|[^\\p{L}])(' + keys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')(?=$|[^\\p{L}])', 'giu'); return t => t.replace(re, (all, pre, w) => { const o = m.get(w) || m.get(w.toLowerCase()) || w; return pre + (w[0] !== w[0].toLowerCase() ? o[0].toUpperCase() + o.slice(1) : o); }); })();
   const lessonTexts = n => V.filter(v => v.lesson === n).map(sayText);
 
   /* ---------- Töne und Stimme ---------- */
@@ -89,7 +90,7 @@
   $('#shX').onclick = closeSheet; $('#sheet').onclick = e => { if (e.target.id === 'sheet') closeSheet(); };
   $('#shLearn').onclick = () => { closeSheet(); startLearn(sheetLesson); };
   $('#shTalk').onclick = () => { closeSheet(); startTalk(sheetLesson); };
-  $('#goRev').onclick = () => { if (dueWords().length) startLearn(null); };
+  $('#goRev').onclick = () => { if (dueWords().length) startLearn(null); else toast('Gerade ist nichts fällig. Lerne eine neue Lektion!'); };
   $('#goTalk').onclick = () => startTalk(null);
   $('#goSet').onclick = () => openSettings();
 
@@ -289,7 +290,7 @@ VERBOTEN
       onTool: (n, a) => live === T.live ? onTool(n, a) : { anweisung: 'Sage nichts.' },
       onReady: () => { if (live === T.live && T.active && !T.handing) activate(); },
       onSpeak: on => { if (live !== T.live) return; idleReset(); if (!on) tApply(); tui.orb(on ? 'speak' : 'listen'); tui.state(on ? `${persona().name} spricht …` : 'Ich höre zu …'); },
-      onCaption: t => { if (live === T.live) $('#tCap').textContent = t; },
+      onCaption: t => { if (live === T.live) $('#tCap').textContent = unspell(t); },
       onTurn: info => { if (live === T.live && T.active) onTurn(info); },
       onGoAway: () => { if (live === T.live) T.forceRotate = true; },
       onClose: (kind, reason) => onLiveClose(live, kind, reason) });
@@ -393,6 +394,6 @@ VERBOTEN
     // Neue Version: sofort neu laden, wenn gerade nicht gelernt wird, sonst beim nächsten Besuch der Startseite
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (!had) return; if (screen === 'home') location.reload(); else reloadWanted = true; });
   }
-  window.__lt = { S, T, P: () => P, Gem, L, V, onTool, startLearn, startTalk, renderHome, grade, dueWords, sayText, parts, allTexts, pauseTalk, CFG, multi, laShow };
+  window.__lt = { unspell, S, T, P: () => P, Gem, L, V, onTool, startLearn, startTalk, renderHome, grade, dueWords, sayText, parts, allTexts, pauseTalk, CFG, multi, laShow };
   renderHome();
 })();
