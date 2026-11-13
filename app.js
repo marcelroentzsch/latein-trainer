@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  const VERSION = '2.4';
+  const VERSION = '2.5';
   const L = window.Logic, V = window.VOCAB, Ic = window.Icons, Gem = window.Gem;
   const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
   const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
@@ -205,6 +205,8 @@ BEWERTUNG für antwort_melden
 - "nochmal": Das Kind möchte das Wort noch einmal hören.
 - "stopp": Das Kind möchte aufhören.
 Wenn du nichts Verständliches hörst, rufst du nichts auf und wartest.
+- Werte nur, was das Kind deutlich und direkt zu dir sagt. Geräusche, Musik, Fernseher, andere Personen im Hintergrund und Reste deiner eigenen Stimme ignorierst du vollständig und rufst deswegen nichts auf.
+- Wenn das Kind etwas gesagt hat, du es aber nicht sicher verstanden hast, rufst du antwort_melden mit art "nochmal" auf.
 
 VERBOTEN
 - Verrate nie selbst die Lösung. Du sagst sie nur, wenn die Werkzeug-Antwort es aufträgt.
@@ -286,7 +288,7 @@ VERBOTEN
     return { anweisung: 'Sage nur: "Welche Lektionen möchtest du lernen?" Rufe lektionen_waehlen auf, sobald das Kind Lektionen nennt.' };
   }
   function openLive() {
-    const live = Gem.live({ system: SYSTEM(), tools: TOOLS,
+    const live = Gem.live({ system: SYSTEM(), tools: TOOLS, bargeIn: Gem.bargeIn,
       onTool: (n, a) => live === T.live ? onTool(n, a) : { anweisung: 'Sage nichts.' },
       onReady: () => { if (live === T.live && T.active && !T.handing) activate(); },
       onSpeak: on => { if (live !== T.live) return; idleReset(); if (!on) tApply(); tui.orb(on ? 'speak' : 'listen'); tui.state(on ? `${persona().name} spricht …` : 'Ich höre zu …'); },
@@ -300,7 +302,8 @@ VERBOTEN
   // Die aktive Sitzung ist bereit: Mikrofon anschließen und den Auftrag schicken
   function activate() {
     const live = T.live; T.retries = 0; T.sess = { answers: 0 }; T.loose = 0;
-    Gem.mic.sink = c => live.audio(c);
+    Gem.gate.reset(); Gem.gate.bargeIn = Gem.bargeIn;
+    Gem.mic.sink = c => { for (const x of Gem.gate.pass(c, Gem.echoRisk() || live.speaking)) live.audio(x); };
     tui.orb('listen'); tui.state('Ich höre zu …');
     if (T.kick) { live.text(appMsg(T.kick)); T.kick = null; T.expectSpeech = true; }
     idleReset();
@@ -348,7 +351,7 @@ VERBOTEN
     show('talk'); tui.notice(''); tui.resume(false); $('#tPrompt').textContent = ''; $('#tHint').textContent = ''; $('#tPic').innerHTML = ''; $('#tCap').textContent = '';
     closeLive(); clearTimeout(T.idleT); clearTimeout(T.pendT);
     Object.assign(T, { active: true, paused: false, lessons: null, cur: null, queue: [], total: 0, done: 0, first: 0, tried: new Set(), missed: new Set(), reveals: {}, ending: false, retries: 0, pending: null, handing: false, forceRotate: false, kick: null, sess: { answers: 0 }, loose: 0, expectSpeech: false }); tui.prog();
-    Gem.mic.onLevel = v => { if (T.live && !T.live.speaking && !T.paused) $('#orb').style.transform = `scale(${1 + Math.min(.25, v * 4)})`; };
+    Gem.mic.onLevel = v => { if (T.live && !T.live.speaking && !Gem.echoRisk() && !T.paused && Gem.gate.hang > 0) $('#orb').style.transform = `scale(${1 + Math.min(.25, v * 4)})`; };
     if (!Gem.hasKey()) { tui.orb(''); tui.state(''); tui.notice('Für das Sprech-Training fehlt noch der Gemini-Schlüssel. Bitte im Elternbereich (⚙️) eintragen.'); return; }
     Gem.ctx(); tui.orb('wait'); tui.state('Verbinde …');
     if (!(await micOn())) return;
@@ -372,12 +375,13 @@ VERBOTEN
      ===================================================================== */
   async function clipInfo() { await Gem.ready; const n = Gem.count(allTexts); $('#sClips').textContent = `${n} von ${allTexts.length} Aufnahmen sind mit dieser Stimme gespeichert.` + (n < allTexts.length ? ' Fehlende lädt die App beim Lernen automatisch.' : ''); }
   function useInfo() { const u = Gem.usage(), f = x => x.toFixed(2).replace('.', ','); $('#sUse').textContent = `Geschätzte Kosten bei Google: heute ${f(u.today)} $, insgesamt ${f(u.total)} $. Das ist ein Richtwert. Maßgeblich ist die Abrechnung in Google AI Studio.`; }
-  function openSettings() { $('#sKey').value = Gem.key; const sv = $('#sVoice'); sv.innerHTML = ''; Gem.VOICES.forEach(([v, t]) => { const o = el('option', '', t); o.value = v; o.selected = v === Gem.voice; sv.appendChild(o); }); $('#sMsg').textContent = ''; clipInfo(); useInfo(); show('settings'); }
+  function openSettings() { $('#sKey').value = Gem.key; $('#sBarge').checked = Gem.bargeIn; const sv = $('#sVoice'); sv.innerHTML = ''; Gem.VOICES.forEach(([v, t]) => { const o = el('option', '', t); o.value = v; o.selected = v === Gem.voice; sv.appendChild(o); }); $('#sMsg').textContent = ''; clipInfo(); useInfo(); show('settings'); }
   const sMsg = (t, bad) => { $('#sMsg').textContent = t; $('#sMsg').style.color = bad ? 'var(--bad)' : 'var(--ok2)'; };
   const needKey = () => { Gem.setKey($('#sKey').value); if (Gem.key) return true; sMsg('Bitte zuerst den Schlüssel eintragen.', true); return false; };
   $('#sBack').onclick = () => { Gem.setKey($('#sKey').value); Gem.onProgress = null; renderHome(); };
   $('#sKey').onchange = () => Gem.setKey($('#sKey').value);
   $('#sVoice').onchange = () => { Gem.setVoice($('#sVoice').value); clipInfo(); };
+  $('#sBarge').onchange = () => Gem.setBargeIn($('#sBarge').checked);
   // Prüft mit einer echten kleinen Anfrage, ob Schlüssel und Guthaben in Ordnung sind
   $('#sTest').onclick = async () => { if (!needKey()) return; sMsg('Teste …'); try { Gem.ctx(); const pcm = await Gem.tts('Hallo!', false); Gem.blockedUntil = 0; Gem.stopAudio(); Gem.queue(pcm); sMsg('Funktioniert! Du solltest ein „Hallo" hören.'); } catch (e) { sMsg(Gem.explain(e), true); } useInfo(); };
   $('#sProbe').onclick = async () => { if (!needKey()) return; sMsg('Lade Probe …'); try { Gem.ctx(); const pcm = await Gem.tts(['puella', 'vīkus', 'dolēre', 'agrikola'].join(' <long pause> ')); Gem.stopAudio(); Gem.queue(pcm); sMsg('puella, vīcus, dolēre, agricola'); } catch (e) { sMsg(Gem.explain(e), true); } useInfo(); };

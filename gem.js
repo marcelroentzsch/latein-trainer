@@ -35,6 +35,8 @@
   const Gem = {
     key: get('gemKey', ''), voice: get('gemVoice', 'Kore'),
     TTS_MODEL: 'gemini-3.8-flash-tts', LIVE_MODEL: 'gemini-3.8-live',
+    bargeIn: get('bargeIn', false),
+    setBargeIn(v) { this.bargeIn = !!v; set('bargeIn', this.bargeIn); },
     VOICES: [['Kore', 'Kore (klar)', 'w'], ['Sulafat', 'Sulafat (warm)', 'w'], ['Leda', 'Leda (jung)', 'w'], ['Aoede', 'Aoede (locker)', 'w'], ['Achird', 'Achird (freundlich)', 'm'], ['Puck', 'Puck (munter)', 'm'], ['Charon', 'Charon (ruhig)', 'm']],
     SV: 's2',                                   // Fassung der Sprechvorgabe; ändert sie sich, werden die Aufnahmen neu erzeugt
     setKey(k) { k = (k || '').trim(); if (k !== this.key) { this.key = k; set('gemKey', k); this.blockedUntil = 0; } },
@@ -163,13 +165,35 @@
 
     /* ---------- Wiedergabe ---------- */
     out: null, srcs: [], playHead: 0,
-    ctx() { if (!this.out || this.out.state === 'closed') { const AC = window.AudioContext || window.webkitAudioContext; this.out = new AC({ sampleRate: RATE }); } if (this.out.state === 'suspended') this.out.resume().catch(() => { }); return this.out; },
-    queue(pcm) { const c = this.ctx(); const buf = c.createBuffer(1, pcm.length, RATE); const ch = buf.getChannelData(0); for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768; const s = c.createBufferSource(); s.buffer = buf; s.connect(c.destination); const at = Math.max(c.currentTime + 0.03, this.playHead); s.start(at); this.playHead = at + buf.duration; this.srcs.push(s); s.onended = () => { this.srcs = this.srcs.filter(x => x !== s); }; return this.playHead - c.currentTime; },
+    ctx() { if (!this.out || this.out.state === 'closed') { const AC = window.AudioContext || window.webkitAudioContext; this.out = new AC({ latencyHint: 'playback' }); } if (this.out.state === 'suspended') this.out.resume().catch(() => { }); return this.out; },
+    queue(pcm, lead = 0.03) { const c = this.ctx(); const buf = c.createBuffer(1, pcm.length, RATE); const ch = buf.getChannelData(0); for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768; const s = c.createBufferSource(); s.buffer = buf; s.connect(c.destination); const fade = Math.min(48, pcm.length >> 3); if (this.playHead < c.currentTime + 0.005) for (let i = 0; i < fade; i++) ch[i] *= i / fade; const at = Math.max(c.currentTime + lead, this.playHead); s.start(at); this.playHead = at + buf.duration; this.srcs.push(s); s.onended = () => { this.srcs = this.srcs.filter(x => x !== s); }; return this.playHead - c.currentTime; },
     stopAudio() { this.srcs.forEach(s => { try { s.stop(); } catch (e) { } }); this.srcs = []; this.playHead = 0; },
     playing() { return !!this.out && this.playHead > this.out.currentTime + 0.05; },
+    // Lautsprecher aktiv oder gerade erst verstummt (Nachhall im Raum)
+    echoRisk() { return !!this.out && this.playHead + 0.4 > this.out.currentTime; },
     async play(text) { const pcm = await this.getClip(text); if (!pcm || !pcm.length) return false; this.stopAudio(); this.queue(pcm); return true; },
 
     /* ---------- Mikrofon (eines für das ganze Sprech-Training, auch wenn die Sitzung wechselt) ---------- */
+    /* Geräuschsperre: lässt nur deutliche Sprache durch, sonst Stille.
+       Während die App selbst spricht, ist das Mikrofon zu (oder bei "Dazwischenreden" nur für sehr laute, nahe Sprache offen). */
+    gate: {
+      floor: 0.004, hang: 0, pre: [], bargeIn: false, sentSpeech: 0,
+      level(c) { let s = 0; for (let i = 0; i < c.length; i++) s += c[i] * c[i]; return Math.sqrt(s / c.length) / 32768; },
+      reset() { this.hang = 0; this.pre = []; },
+      // liefert die Blöcke, die gesendet werden sollen (Sprache samt kurzem Vorlauf), sonst einen Stille-Block
+      pass(c, echo) {
+        const lvl = this.level(c), silent = new Int16Array(c.length);
+        if (!echo) { const up = this.hang > 0 ? 0.002 : 0.025; this.floor = lvl < this.floor ? this.floor * 0.7 + lvl * 0.3 : this.floor * (1 - up) + lvl * up; }   // Grundgeräusch lernen: steigt langsam, fällt schnell
+        let thr = Math.max(0.012, this.floor * 3.2);
+        if (echo) thr = this.bargeIn ? Math.max(0.08, thr * 5) : Infinity;
+        const loud = lvl > thr;
+        if (loud) { const out = this.hang > 0 ? [c] : this.pre.concat([c]); this.pre = []; this.hang = 14; this.sentSpeech++; return out; }
+        if (this.hang > 0) { this.hang--; return [c]; }
+        this.pre.push(c); if (this.pre.length > 4) this.pre.shift();
+        return [silent];
+      }
+    },
+
     mic: {
       stream: null, mctx: null, sink: null, onLevel: null,
       async start() {
@@ -188,7 +212,7 @@
     live(opts) {
       const S = { ws: null, ready: false, closed: false, speaking: false, outText: '', toolInTurn: false, promptTokens: 0, sent: 0 };
       const emit = (n, ...a) => { try { return opts[n] && opts[n](...a); } catch (e) { console.error(e); } };
-      const setup = { model: 'models/' + this.LIVE_MODEL, generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.voice } } } }, systemInstruction: { parts: [{ text: opts.system }] }, tools: opts.tools, outputAudioTranscription: {}, contextWindowCompression: { slidingWindow: {} } };
+      const setup = { model: 'models/' + this.LIVE_MODEL, generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.voice } } } }, systemInstruction: { parts: [{ text: opts.system }] }, tools: opts.tools, outputAudioTranscription: {}, contextWindowCompression: { slidingWindow: {} }, realtimeInputConfig: { automaticActivityDetection: { startOfSpeechSensitivity: 'START_SENSITIVITY_LOW', prefixPaddingMs: 200, silenceDurationMs: 700 }, activityHandling: opts.bargeIn ? 'START_OF_ACTIVITY_INTERRUPTS' : 'NO_INTERRUPTION', turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY' } };
       let ws; try { ws = S.ws = new WebSocket(WSURL + '?key=' + encodeURIComponent(this.key)); } catch (e) { setTimeout(() => emit('onClose', 'net', ''), 0); S.closed = true; S.text = S.audio = S.close = () => { }; return S; }
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => ws.send(JSON.stringify({ setup }));
@@ -201,7 +225,7 @@
         if (m.goAway) emit('onGoAway');
         const sc = m.serverContent;
         if (sc) {
-          if (sc.modelTurn) for (const p of sc.modelTurn.parts || []) if (p.inlineData && p.inlineData.data) { const b = b64ToBytes(p.inlineData.data); this.queue(new Int16Array(b.buffer, 0, b.length >> 1)); if (!S.speaking) { S.speaking = true; emit('onSpeak', true); } }
+          if (sc.modelTurn) for (const p of sc.modelTurn.parts || []) if (p.inlineData && p.inlineData.data) { const b = b64ToBytes(p.inlineData.data); this.queue(new Int16Array(b.buffer, 0, b.length >> 1), 0.18); if (!S.speaking) { S.speaking = true; emit('onSpeak', true); } }
           if (sc.outputTranscription && sc.outputTranscription.text) { S.outText += sc.outputTranscription.text; emit('onCaption', S.outText); }
           if (sc.interrupted) { this.stopAudio(); S.speaking = false; S.outText = ''; emit('onSpeak', false); }
           if (sc.turnComplete) { const wait = Math.max(0, (this.playHead - this.ctx().currentTime) * 1000), tool = S.toolInTurn; S.toolInTurn = false; S.outText = ''; setTimeout(() => { if (S.closed) return; if (S.speaking && !this.playing()) { S.speaking = false; emit('onSpeak', false); } emit('onTurn', { tool }); }, wait + 50); }
