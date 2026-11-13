@@ -83,6 +83,9 @@ h2{font-size:17px;margin:14px 0 8px}
 .pic{width:110px;height:110px;margin:0 auto}
 .cap{color:var(--soft);min-height:44px;font-size:16px}
 .vrow{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 0}.vrow .btn{padding:12px 4px;font-size:15px}
+.loading{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;color:var(--soft);min-height:260px}
+.spin{width:46px;height:46px;border-radius:50%;border:5px solid #dfe2f4;border-top-color:var(--pri);animation:rot 1s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
 .notice{background:#fff7e0;border:2px solid #ffe08a;border-radius:14px;padding:10px 12px;font-size:14px;margin:10px 0}
 .stars{font-size:54px;letter-spacing:6px;text-align:center;margin:18px 0 8px}
 .sum{background:#fff;border-radius:22px;padding:18px;text-align:center;margin-bottom:16px;box-shadow:0 3px 0 var(--line)}.sum b{font-size:26px}
@@ -93,8 +96,8 @@ input.f,select.f{width:100%;font:inherit;padding:12px;border-radius:14px;border:
 <body>
 
 <section id="home" class="screen on">
-  <div class="top"><h1>🏛️ Latein</h1><div class="stats"><span class="stat" id="stStreak">🔥 0</span><span class="stat" id="stXp">⭐ 0</span><button class="stat" id="goSet">⚙️</button></div></div>
-  <button class="hero" id="goTalk"><span class="em">🎤</span><div><b>Sprech-Training</b><span>Lena fragt dich ab, du antwortest laut</span></div></button>
+  <div class="top"><h1>🏛️ Latein</h1><div class="stats"><span class="stat" id="stStreak">🔥 0</span><span class="stat" id="stXp">⚡ 0</span><button class="stat" id="goSet">⚙️</button></div></div>
+  <button class="hero" id="goTalk"><span class="em">🎤</span><div><b>Sprech-Training</b><span id="talkSub">Lena fragt dich ab, du antwortest laut</span></div></button>
   <button class="hero alt" id="goRev"><span class="em">🔁</span><div><b>Wiederholen</b><span id="revInfo"></span></div></button>
   <h2>Lektionen</h2>
   <div class="grid" id="grid"></div>
@@ -119,6 +122,7 @@ input.f,select.f{width:100%;font:inherit;padding:12px;border-radius:14px;border:
   </div>
   <div class="vrow"><button class="btn ghost" id="bHint">💡 Tipp</button><button class="btn ghost" id="bRepeat">🔁 Nochmal</button><button class="btn ghost" id="bGive">🤷 Weiß nicht</button></div>
   <div class="notice" id="tNotice" style="display:none"></div>
+  <button class="btn" id="tResume" style="display:none;margin-top:10px">Weiter</button>
 </section>
 
 <section id="end" class="screen">
@@ -139,7 +143,9 @@ input.f,select.f{width:100%;font:inherit;padding:12px;border-radius:14px;border:
   <label class="h">Aufnahmen der lateinischen Wörter</label>
   <p class="soft" id="sClips" style="margin:0 0 8px"></p>
   <button class="btn ghost sm" id="sLoad">Alle Aufnahmen laden</button>
-  <p class="notice">Der Schlüssel bleibt nur auf diesem Gerät. Beim Sprech-Training geht die Stimme an Google. Googles Bedingungen sehen die Schnittstelle nicht für Apps vor, die Kinder nutzen. Die Entscheidung liegt bei dir.</p>
+  <label class="h">Verbrauch</label>
+  <p class="soft" id="sUse" style="margin:0"></p>
+  <p class="notice">Der Schlüssel bleibt nur auf diesem Gerät. Beim Sprech-Training geht die Stimme an Google, und jede Abfrage kostet Guthaben. Googles Bedingungen sehen die Schnittstelle nicht für Apps vor, die Kinder nutzen. Die Entscheidung liegt bei dir.</p>
   <button class="btn ghost sm" id="sReset">Lernfortschritt zurücksetzen</button>
 </section>
 
@@ -152,10 +158,10 @@ input.f,select.f{width:100%;font:inherit;padding:12px;border-radius:14px;border:
   <ul class="wl" id="shList"></ul>
 </div></div>
 
-<script src="vocab.js?v=22"></script>
-<script src="logic.js?v=22"></script>
-<script src="icons.js?v=22"></script>
-<script src="gem.js?v=22"></script>
-<script src="app.js?v=22"></script>
+<script src="vocab.js?v=23"></script>
+<script src="logic.js?v=23"></script>
+<script src="icons.js?v=23"></script>
+<script src="gem.js?v=23"></script>
+<script src="app.js?v=23"></script>
 </body>
 </html>
